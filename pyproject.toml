@@ -1,0 +1,24 @@
+[project]
+name = "phoxif"
+version = "0.1.0"
+description = "EXIF metadata toolkit for photo/video organization"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135.1",
+    "imagehash>=4.3.2",
+    "pillow>=12.1.1",
+    "python-multipart>=0.0.22",
+    "pywebview>=6.1",
+    "pyyaml>=6.0",
+    "send2trash>=2.1.0",
+    "uvicorn>=0.41.0",
+    "websockets>=16.0",
+]
+
+[project.scripts]
+phoxif = "main:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.5",
+]

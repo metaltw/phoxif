@@ -1,0 +1,40 @@
+base_dir: "/path/to/your/photos"
+extensions: [".jpg", ".jpeg", ".heic", ".png", ".mov", ".mp4"]
+nominatim_url: "https://nominatim.openstreetmap.org/reverse"
+geocache_file: ".geocache.json"
+
+# Web UI port for photo sorter
+sorter_port: 8899
+
+# Directories to skip during processing
+skip_dirs: ["Unknown", ".thumbnails", ".previews", "__pycache__"]
+
+# GPS coordinates for known locations
+# Used by write_gps to fill missing GPS metadata
+# Format: "FolderName": { lat: <latitude>, lon: <longitude> }
+gps_locations:
+  "Example City":
+    lat: 25.0330
+    lon: 121.5654
+  "Japan_Tokyo":
+    lat: 35.6762
+    lon: 139.6503
+  "France_Paris":
+    lat: 48.8566
+    lon: 2.3522
+  "USA_NewYork":
+    lat: 40.7128
+    lon: -74.0060
+
+# HEVC conversion settings
+hevc:
+  quality: 55           # VideoToolbox quality (lower = better, 1-100)
+  audio_bitrate: "128k"
+  min_h264_size_mb: 100 # Only convert H.264 files larger than this
+  recompress_mov: false  # Also recompress HEVC .mov to .mp4
+
+# Nominatim reverse geocode settings
+geocode:
+  accept_language: "en"  # Language for location names
+  zoom: 10               # Nominatim zoom level (city-level)
+  rate_limit_sec: 1.1    # Seconds between API calls

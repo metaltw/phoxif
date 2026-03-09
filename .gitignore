@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# phoxif — personal config and runtime data
+config.yaml
+.geocache.json
+.thumbnails/
+.previews/
