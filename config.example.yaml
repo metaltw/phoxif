@@ -33,6 +33,13 @@ hevc:
   min_h264_size_mb: 100 # Only convert H.264 files larger than this
   recompress_mov: false  # Also recompress HEVC .mov to .mp4
 
+# AI-based orientation detection (Gemini Vision)
+# Get a free API key at https://aistudio.google.com/apikey
+orientation_detect:
+  google_api_key: ""             # Your Google Gemini API key
+  model: "gemini-2.5-flash"     # Free tier
+  confidence_threshold: 0.7      # Minimum confidence to flag (0.0-1.0)
+
 # Nominatim reverse geocode settings
 geocode:
   accept_language: "en"  # Language for location names

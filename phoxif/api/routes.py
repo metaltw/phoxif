@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from phoxif.api.actions import fix_orientation, rename_files, trash_files
+from phoxif.api.actions import auto_rotate, fix_orientation, rename_files, trash_files
 from phoxif.api.logger import OperationLogger
 from phoxif.api.rename import generate_rename_preview
 from phoxif.api.scanner import find_duplicates, find_orientation_issues, scan_folder
@@ -69,6 +69,28 @@ class OrientationFixRequest(BaseModel):
     """Request body for /api/orientation/fix."""
 
     files: list[OrientationFixItem]
+
+
+class OrientationDetectRequest(BaseModel):
+    """Request body for /api/orientation/detect."""
+
+    path: str
+    google_api_key: str
+    model: str = "gemini-2.5-flash"
+    confidence_threshold: float = 0.7
+
+
+class AutoRotateItem(BaseModel):
+    """Single file auto-rotate entry."""
+
+    path: str
+    rotation: int
+
+
+class AutoRotateRequest(BaseModel):
+    """Request body for /api/orientation/auto-rotate."""
+
+    files: list[AutoRotateItem]
 
 
 class ApiResponse(BaseModel):
@@ -418,6 +440,116 @@ async def api_undo(req: UndoRequest) -> ApiResponse:
         return ApiResponse(ok=False, error=str(e))
 
 
+@router.post("/orientation/detect", response_model=ApiResponse)
+async def api_detect_orientation(req: OrientationDetectRequest) -> ApiResponse:
+    """Detect visually incorrect orientation using Gemini Vision AI.
+
+    Scans images with missing/normal EXIF Orientation and uses AI to
+    detect if they need rotation.
+
+    Args:
+        req: Request with path, Google API key, and optional model/threshold.
+
+    Returns:
+        ApiResponse with list of detected orientation issues.
+    """
+    resolved = _resolve_folder_path(req.path)
+    if resolved is None:
+        return ApiResponse(ok=False, error=f"Path not found: {req.path}")
+
+    # Use cached scan data if available, otherwise scan first
+    base_dir_str = str(resolved)
+    if base_dir_str not in _scan_cache:
+        return ApiResponse(
+            ok=False,
+            error="Folder not scanned yet. Run /api/scan first.",
+        )
+
+    files = _scan_cache[base_dir_str]["files"]
+
+    try:
+        from phoxif.api.orientation_ai import detect_orientation_batch
+
+        issues = detect_orientation_batch(
+            files,
+            api_key=req.google_api_key,
+            model=req.model,
+            confidence_threshold=req.confidence_threshold,
+        )
+        return ApiResponse(
+            ok=True,
+            data={
+                "issues": issues,
+                "issues_count": len(issues),
+                "scanned_count": len(
+                    [
+                        f
+                        for f in files
+                        if f.get("orientation") in (None, 1)
+                        and Path(f["path"]).suffix.lower()
+                        in {
+                            ".jpg",
+                            ".jpeg",
+                            ".heic",
+                            ".png",
+                            ".tiff",
+                            ".tif",
+                            ".webp",
+                            ".bmp",
+                        }
+                    ]
+                ),
+            },
+        )
+    except ImportError:
+        return ApiResponse(
+            ok=False,
+            error="google-generativeai package not installed. "
+            "Run: uv add google-generativeai",
+        )
+    except Exception as e:
+        return ApiResponse(ok=False, error=str(e))
+
+
+@router.post("/orientation/auto-rotate", response_model=ApiResponse)
+async def api_auto_rotate(req: AutoRotateRequest) -> ApiResponse:
+    """Auto-rotate images that are visually wrong.
+
+    Sets EXIF Orientation tag then applies lossless auto-rotation
+    via exiftool.
+
+    Args:
+        req: Request with list of files and their required rotations.
+
+    Returns:
+        ApiResponse with rotation results.
+    """
+    if not req.files:
+        return ApiResponse(ok=False, error="No files specified")
+
+    first_file = Path(req.files[0].path).resolve()
+    base_dir = str(first_file.parent)
+
+    for cached_path in _scan_cache:
+        try:
+            first_file.relative_to(cached_path)
+            base_dir = cached_path
+            break
+        except ValueError:
+            continue
+
+    logger = _get_logger(base_dir)
+    logger.start_session()
+
+    try:
+        file_items = [{"path": f.path, "rotation": f.rotation} for f in req.files]
+        result = auto_rotate(file_items, logger)
+        logger.save()
+        return ApiResponse(ok=True, data=result)
+    except Exception as e:
+        return ApiResponse(ok=False, error=str(e))
+
+
 # --- Finder reveal ---
 
 
@@ -652,7 +784,12 @@ async def api_pick_folder() -> ApiResponse:
         else:
             # Linux: try zenity, then kdialog
             for cmd in [
-                ["zenity", "--file-selection", "--directory", "--title=Select photo folder"],
+                [
+                    "zenity",
+                    "--file-selection",
+                    "--directory",
+                    "--title=Select photo folder",
+                ],
                 ["kdialog", "--getexistingdirectory", "."],
             ]:
                 try:

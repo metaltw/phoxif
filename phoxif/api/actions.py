@@ -202,3 +202,101 @@ def fix_orientation(
         "failed": failed,
         "count": len(success),
     }
+
+
+# Rotation degrees to exiftool -Orientation value mapping
+_ROTATION_TO_ORIENTATION: dict[int, int] = {
+    90: 6,  # Rotate 90° CW
+    180: 3,  # Rotate 180°
+    270: 8,  # Rotate 90° CCW (= 270° CW)
+}
+
+
+def auto_rotate(
+    file_items: list[dict[str, Any]],
+    logger: OperationLogger,
+) -> dict[str, Any]:
+    """Auto-rotate images by setting EXIF Orientation then applying -autorot.
+
+    For images that are visually wrong but have Orientation=1 or missing,
+    this sets the correct Orientation tag first, then uses exiftool -autorot
+    to losslessly rotate the pixels and reset to Orientation=1.
+
+    Args:
+        file_items: List of dicts with keys:
+            - path: Absolute file path.
+            - rotation: Degrees to rotate CW (90, 180, 270).
+        logger: Operation logger for undo support.
+
+    Returns:
+        Dict with keys:
+        - success: List of successfully rotated paths.
+        - failed: List of {path, error} for failures.
+        - count: Number of files rotated.
+    """
+    success: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for item in file_items:
+        path_str = item["path"]
+        rotation = item["rotation"]
+        path = Path(path_str)
+
+        if not path.exists():
+            failed.append({"path": path_str, "error": "File not found"})
+            continue
+
+        orient_value = _ROTATION_TO_ORIENTATION.get(rotation)
+        if orient_value is None:
+            failed.append({"path": path_str, "error": f"Invalid rotation: {rotation}"})
+            continue
+
+        try:
+            # Step 1: Set the Orientation tag to the correct rotation value
+            result = subprocess.run(
+                [
+                    "exiftool",
+                    f"-Orientation={orient_value}",
+                    "-n",
+                    "-overwrite_original",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                failed.append({"path": path_str, "error": result.stderr.strip()})
+                continue
+
+            # Step 2: Auto-rotate pixels based on Orientation, then reset to 1
+            result = subprocess.run(
+                ["exiftool", "-autorot", "-overwrite_original", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                failed.append({"path": path_str, "error": result.stderr.strip()})
+                continue
+
+            logger.log_operation(
+                op_type="ORIENTATION",
+                file=str(path),
+                old_value="1",
+                new_value=f"rotated {rotation}°",
+                detail=f"Auto-rotated {rotation}° CW: {path.name}",
+            )
+            success.append(path_str)
+        except subprocess.TimeoutExpired:
+            failed.append({"path": path_str, "error": "exiftool timed out"})
+        except FileNotFoundError:
+            failed.append({"path": path_str, "error": "exiftool not found"})
+        except Exception as e:
+            failed.append({"path": path_str, "error": str(e)})
+
+    return {
+        "success": success,
+        "failed": failed,
+        "count": len(success),
+    }
