@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState } from './types';
+import type { Screen, ScanResult, ThumbState, OrientationIssue } from './types';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -7,6 +7,7 @@ import { DuplicateDetail } from './components/DuplicateDetail';
 import { SimilarDetail } from './components/SimilarDetail';
 import { OrientationDetail } from './components/OrientationDetail';
 import { RenameDetail } from './components/RenameDetail';
+import { DateDetail } from './components/DateDetail';
 import { ConfirmScreen } from './components/ConfirmScreen';
 import { ExecuteScreen } from './components/ExecuteScreen';
 import { DoneScreen } from './components/DoneScreen';
@@ -20,7 +21,7 @@ function formatSize(bytes: number): string {
 }
 
 const stepMap: Record<Screen, number> = {
-  scan: 1, review: 2, duplicates: 2, similar: 2, orientation: 2, rename: 2,
+  scan: 1, review: 2, duplicates: 2, similar: 2, orientation: 2, rename: 2, dates: 2,
   confirm: 3, execute: 4, done: 5, history: 5,
 };
 
@@ -30,7 +31,7 @@ interface ExecuteOperation {
   label: string;
   detail: string;
   files: string[];
-  action: 'trash' | 'orientation' | 'rename';
+  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates';
   actionData?: unknown;
 }
 
@@ -45,10 +46,14 @@ export function App(): React.JSX.Element {
   const [dupStates, setDupStates] = useState<Map<number, ThumbState[]>>(new Map());
   // Similar photo review state
   const [simStates, setSimStates] = useState<Map<number, ThumbState[]>>(new Map());
+  // AI orientation results
+  const [aiOrientIssues, setAiOrientIssues] = useState<OrientationIssue[]>([]);
   // Orientation selected paths
   const [orientSelected, setOrientSelected] = useState<Set<string>>(new Set());
   // Rename selected paths
   const [renameSelected, setRenameSelected] = useState<Set<string>>(new Set());
+  // Date fix selected paths
+  const [dateSelected, setDateSelected] = useState<Set<string>>(new Set());
   // Skipped categories (reviewed but user wants to bypass)
   const [skippedCategories, setSkippedCategories] = useState<Set<string>>(new Set());
   // Confirm toggles and operation order
@@ -88,11 +93,15 @@ export function App(): React.JSX.Element {
     }
     setSimStates(sStates);
 
-    // Init orientation selection (all selected by default)
-    setOrientSelected(new Set(result.orientation_issues.map(i => i.file.path)));
+    // Reset AI orientation state (will be populated from OrientationDetail)
+    setAiOrientIssues([]);
+    setOrientSelected(new Set());
 
     // Init rename selection (all selected by default)
     setRenameSelected(new Set(result.rename_preview.map(r => r.file.path)));
+
+    // Init date fix selection (all selected by default)
+    setDateSelected(new Set(result.date_mismatches.map(d => d.file.path)));
 
     setReviewedCategories(new Set());
     setConfirmToggles({});
@@ -165,22 +174,22 @@ export function App(): React.JSX.Element {
       }
     }
 
-    // Orientation fix
+    // Auto-rotate (AI orientation)
     if (reviewedCategories.has('orientation') && !skippedCategories.has('orientation') && orientSelected.size > 0) {
-      const selectedIssues = scanResult.orientation_issues.filter(
+      const selectedIssues = aiOrientIssues.filter(
         i => orientSelected.has(i.file.path)
       );
       if (selectedIssues.length > 0) {
         ops.push({
           key: 'orient-fix',
           icon: '\uD83D\uDD04',
-          label: `Fix orientation on ${selectedIssues.length} photos`,
-          detail: 'Set EXIF orientation to Normal',
+          label: `Auto-rotate ${selectedIssues.length} files`,
+          detail: 'AI-detected rotation correction',
           files: selectedIssues.map(i => i.file.path),
-          action: 'orientation',
+          action: 'auto-rotate',
           actionData: selectedIssues.map(i => ({
             path: i.file.path,
-            orientation: i.current_orientation,
+            rotation: i.rotation,
           })),
         });
       }
@@ -207,6 +216,27 @@ export function App(): React.JSX.Element {
       }
     }
 
+    // Fix dates (always last before sort)
+    if (reviewedCategories.has('dates') && !skippedCategories.has('dates') && dateSelected.size > 0) {
+      const selectedDates = scanResult.date_mismatches.filter(
+        d => dateSelected.has(d.file.path)
+      );
+      if (selectedDates.length > 0) {
+        ops.push({
+          key: 'fix-dates',
+          icon: '\uD83D\uDCC5',
+          label: `Fix dates on ${selectedDates.length} files`,
+          detail: 'Set mtime to match EXIF/filename date',
+          files: selectedDates.map(d => d.file.path),
+          action: 'fix-dates',
+          actionData: selectedDates.map(d => ({
+            path: d.file.path,
+            target_date: d.exif_date,
+          })),
+        });
+      }
+    }
+
     // Sort by user-defined order if available
     if (operationOrder.length > 0) {
       ops.sort((a, b) => {
@@ -217,7 +247,7 @@ export function App(): React.JSX.Element {
     }
 
     return ops;
-  }, [scanResult, reviewedCategories, skippedCategories, dupStates, simStates, orientSelected, renameSelected, operationOrder]);
+  }, [scanResult, reviewedCategories, skippedCategories, dupStates, simStates, orientSelected, renameSelected, dateSelected, operationOrder, aiOrientIssues]);
 
   const toggleSkip = useCallback((category: string) => {
     setSkippedCategories(prev => {
@@ -258,6 +288,8 @@ export function App(): React.JSX.Element {
           simStates={simStates}
           orientSelected={orientSelected}
           renameSelected={renameSelected}
+          dateSelected={dateSelected}
+          aiOrientIssues={aiOrientIssues}
           onNavigate={navigateTo}
           formatSize={formatSize}
         />
@@ -299,7 +331,9 @@ export function App(): React.JSX.Element {
 
       {screen === 'orientation' && scanResult && (
         <OrientationDetail
-          issues={scanResult.orientation_issues}
+          scanPath={scanResult.base_dir}
+          aiOrientIssues={aiOrientIssues}
+          onAiOrientIssuesChange={setAiOrientIssues}
           selectedPaths={orientSelected}
           onSelectionChange={setOrientSelected}
           onBack={() => {
@@ -310,7 +344,6 @@ export function App(): React.JSX.Element {
             markReviewed('orientation');
             navigateTo('review');
           }}
-          formatSize={formatSize}
         />
       )}
 
@@ -325,6 +358,22 @@ export function App(): React.JSX.Element {
           }}
           onDone={() => {
             markReviewed('rename');
+            navigateTo('review');
+          }}
+        />
+      )}
+
+      {screen === 'dates' && scanResult && (
+        <DateDetail
+          mismatches={scanResult.date_mismatches}
+          selectedPaths={dateSelected}
+          onSelectionChange={setDateSelected}
+          onBack={() => {
+            markReviewed('dates');
+            navigateTo('review');
+          }}
+          onDone={() => {
+            markReviewed('dates');
             navigateTo('review');
           }}
         />
@@ -361,8 +410,10 @@ export function App(): React.JSX.Element {
             setSkippedCategories(new Set());
             setDupStates(new Map());
             setSimStates(new Map());
+            setAiOrientIssues([]);
             setOrientSelected(new Set());
             setRenameSelected(new Set());
+            setDateSelected(new Set());
             setConfirmToggles({});
             setOperationOrder([]);
             navigateTo('scan');

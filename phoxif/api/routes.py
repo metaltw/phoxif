@@ -11,10 +11,21 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from phoxif.api.actions import auto_rotate, fix_orientation, rename_files, trash_files
+from phoxif.api.actions import (
+    auto_rotate,
+    fix_file_dates,
+    fix_orientation,
+    rename_files,
+    trash_files,
+)
 from phoxif.api.logger import OperationLogger
 from phoxif.api.rename import generate_rename_preview
-from phoxif.api.scanner import find_duplicates, find_orientation_issues, scan_folder
+from phoxif.api.scanner import (
+    find_date_mismatches,
+    find_duplicates,
+    find_exif_orientation_issues,
+    scan_folder,
+)
 from phoxif.api.similar import find_similar_groups
 
 router = APIRouter(prefix="/api")
@@ -75,7 +86,7 @@ class OrientationDetectRequest(BaseModel):
     """Request body for /api/orientation/detect."""
 
     path: str
-    google_api_key: str
+    google_api_key: str | None = None
     model: str = "gemini-2.5-flash"
     confidence_threshold: float = 0.7
 
@@ -91,6 +102,19 @@ class AutoRotateRequest(BaseModel):
     """Request body for /api/orientation/auto-rotate."""
 
     files: list[AutoRotateItem]
+
+
+class DateFixItem(BaseModel):
+    """Single file date fix entry."""
+
+    path: str
+    target_date: str  # ISO format target date
+
+
+class DateFixRequest(BaseModel):
+    """Request body for /api/dates/fix."""
+
+    files: list[DateFixItem]
 
 
 class ApiResponse(BaseModel):
@@ -220,8 +244,9 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
             ]
         )
         already_named = len(result["files"]) - len(rename_preview) - files_without_date
-        orientation_issues = find_orientation_issues(result["files"])
+        orientation_issues = find_exif_orientation_issues(result["files"])
         similar_groups = find_similar_groups(result["files"])
+        date_mismatches = find_date_mismatches(result["files"])
 
         scan_data = {
             "files": result["files"],
@@ -238,8 +263,8 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
                 "renameable": len(rename_preview),
                 "already_named": already_named,
             },
-            "orientation_issues": orientation_issues,
-            "orientation_stats": {
+            "exif_orientation_issues": orientation_issues,
+            "exif_orientation_stats": {
                 "issues_count": len(orientation_issues),
             },
             "similar_groups": similar_groups,
@@ -247,6 +272,11 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
                 "groups": len(similar_groups),
                 "total_similar": sum(g["count"] for g in similar_groups),
                 "reclaimable_size": sum(g["reclaimable_size"] for g in similar_groups),
+            },
+            "date_mismatches": date_mismatches,
+            "date_stats": {
+                "mismatches": len(date_mismatches),
+                "total_checked": len(result["files"]),
             },
         }
 
@@ -440,75 +470,159 @@ async def api_undo(req: UndoRequest) -> ApiResponse:
         return ApiResponse(ok=False, error=str(e))
 
 
-@router.post("/orientation/detect", response_model=ApiResponse)
-async def api_detect_orientation(req: OrientationDetectRequest) -> ApiResponse:
+class TestKeyRequest(BaseModel):
+    """Request body for /api/orientation/test-key."""
+
+    google_api_key: str
+
+
+@router.post("/orientation/test-key", response_model=ApiResponse)
+def api_test_key(req: TestKeyRequest) -> ApiResponse:
+    """Test if a Google Gemini API key is valid.
+
+    Makes a minimal API call to verify the key works.
+
+    Args:
+        req: Request with google_api_key.
+
+    Returns:
+        ApiResponse with ok=True if key is valid.
+    """
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=req.google_api_key)
+        # Minimal call: list models to verify key
+        models = client.models.list()
+        # Consume at least one result to confirm auth works
+        next(iter(models))
+        return ApiResponse(ok=True)
+    except ImportError:
+        return ApiResponse(
+            ok=False,
+            error="google-generativeai package not installed. Run: uv add google-genai",
+        )
+    except StopIteration:
+        return ApiResponse(ok=True)
+    except Exception as e:
+        msg = str(e).lower()
+        if (
+            "400" in msg
+            or "401" in msg
+            or "403" in msg
+            or "api key" in msg
+            or "invalid" in msg
+        ):
+            return ApiResponse(ok=False, error="Invalid API key")
+        if "network" in msg or "connect" in msg or "timeout" in msg:
+            return ApiResponse(
+                ok=False, error="Network error — check internet connection"
+            )
+        return ApiResponse(ok=False, error="Key test failed — please try again")
+
+
+@router.post("/orientation/detect")
+def api_detect_orientation(req: OrientationDetectRequest) -> Response:
     """Detect visually incorrect orientation using Gemini Vision AI.
 
-    Scans images with missing/normal EXIF Orientation and uses AI to
-    detect if they need rotation.
+    Returns a Server-Sent Events stream with progress updates and final results.
+    Events:
+    - progress: {current, total, filename}
+    - result: {issues, issues_count, scanned_count}
+    - error: {message}
 
     Args:
         req: Request with path, Google API key, and optional model/threshold.
 
     Returns:
-        ApiResponse with list of detected orientation issues.
+        SSE stream response.
     """
+    import json as _json
+
     resolved = _resolve_folder_path(req.path)
     if resolved is None:
-        return ApiResponse(ok=False, error=f"Path not found: {req.path}")
-
-    # Use cached scan data if available, otherwise scan first
-    base_dir_str = str(resolved)
-    if base_dir_str not in _scan_cache:
-        return ApiResponse(
-            ok=False,
-            error="Folder not scanned yet. Run /api/scan first.",
+        err = _json.dumps({"message": f"Path not found: {req.path}"})
+        return Response(
+            content=f"event: error\ndata: {err}\n\n",
+            media_type="text/event-stream",
         )
+
+    base_dir_str = str(resolved)
+
+    # Scan if not cached yet
+    if base_dir_str not in _scan_cache:
+        try:
+            scan_result = scan_folder(resolved)
+            _scan_cache[base_dir_str] = {
+                "files": scan_result["files"],
+                "stats": scan_result["stats"],
+                "exiftool_available": scan_result["exiftool_available"],
+            }
+        except Exception as e:
+            err = _json.dumps({"message": f"Scan failed: {e}"})
+            return Response(
+                content=f"event: error\ndata: {err}\n\n",
+                media_type="text/event-stream",
+            )
 
     files = _scan_cache[base_dir_str]["files"]
 
-    try:
-        from phoxif.api.orientation_ai import detect_orientation_batch
+    from phoxif.api.orientation_ai import (
+        _ALL_SUPPORTED_EXTS,
+        detect_orientation_batch,
+    )
 
-        issues = detect_orientation_batch(
-            files,
-            api_key=req.google_api_key,
-            model=req.model,
-            confidence_threshold=req.confidence_threshold,
-        )
-        return ApiResponse(
-            ok=True,
-            data={
-                "issues": issues,
-                "issues_count": len(issues),
-                "scanned_count": len(
-                    [
-                        f
-                        for f in files
-                        if f.get("orientation") in (None, 1)
-                        and Path(f["path"]).suffix.lower()
-                        in {
-                            ".jpg",
-                            ".jpeg",
-                            ".heic",
-                            ".png",
-                            ".tiff",
-                            ".tif",
-                            ".webp",
-                            ".bmp",
-                        }
-                    ]
-                ),
-            },
-        )
-    except ImportError:
-        return ApiResponse(
-            ok=False,
-            error="google-generativeai package not installed. "
-            "Run: uv add google-generativeai",
-        )
-    except Exception as e:
-        return ApiResponse(ok=False, error=str(e))
+    scanned_count = len(
+        [f for f in files if Path(f["path"]).suffix.lower() in _ALL_SUPPORTED_EXTS]
+    )
+
+    import queue
+    import threading
+
+    from starlette.responses import StreamingResponse
+
+    event_queue: queue.Queue[str | None] = queue.Queue()
+
+    def on_progress(current: int, total: int, filename: str) -> None:
+        """Push progress event to queue."""
+        evt = _json.dumps({"current": current, "total": total, "filename": filename})
+        event_queue.put(f"event: progress\ndata: {evt}\n\n")
+
+    def run_detection() -> None:
+        """Run batch detection in a thread, push results to queue."""
+        try:
+            issues = detect_orientation_batch(
+                files,
+                confidence_threshold=req.confidence_threshold,
+                progress_callback=on_progress,
+                api_key=req.google_api_key,
+                model=req.model,
+            )
+            result_data = _json.dumps(
+                {
+                    "issues": issues,
+                    "issues_count": len(issues),
+                    "scanned_count": scanned_count,
+                }
+            )
+            event_queue.put(f"event: result\ndata: {result_data}\n\n")
+        except Exception as e:
+            event_queue.put(
+                f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
+            )
+        finally:
+            event_queue.put(None)  # Signal end
+
+    def generate():  # type: ignore[no-untyped-def]
+        thread = threading.Thread(target=run_detection, daemon=True)
+        thread.start()
+        while True:
+            evt = event_queue.get()
+            if evt is None:
+                break
+            yield evt
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/orientation/auto-rotate", response_model=ApiResponse)
@@ -544,6 +658,42 @@ async def api_auto_rotate(req: AutoRotateRequest) -> ApiResponse:
     try:
         file_items = [{"path": f.path, "rotation": f.rotation} for f in req.files]
         result = auto_rotate(file_items, logger)
+        logger.save()
+        return ApiResponse(ok=True, data=result)
+    except Exception as e:
+        return ApiResponse(ok=False, error=str(e))
+
+
+@router.post("/dates/fix", response_model=ApiResponse)
+async def api_fix_dates(req: DateFixRequest) -> ApiResponse:
+    """Fix file modification dates to match EXIF or filename dates.
+
+    Args:
+        req: Request with list of files and their target dates.
+
+    Returns:
+        ApiResponse with fix results.
+    """
+    if not req.files:
+        return ApiResponse(ok=False, error="No files specified")
+
+    first_file = Path(req.files[0].path).resolve()
+    base_dir = str(first_file.parent)
+
+    for cached_path in _scan_cache:
+        try:
+            first_file.relative_to(cached_path)
+            base_dir = cached_path
+            break
+        except ValueError:
+            continue
+
+    logger = _get_logger(base_dir)
+    logger.start_session()
+
+    try:
+        file_items = [{"path": f.path, "target_date": f.target_date} for f in req.files]
+        result = fix_file_dates(file_items, logger)
         logger.save()
         return ApiResponse(ok=True, data=result)
     except Exception as e:

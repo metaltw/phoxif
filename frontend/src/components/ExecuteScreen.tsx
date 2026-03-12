@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { trashFiles, fixOrientation, executeRenames } from '../api';
+import { trashFiles, fixOrientation, executeRenames, autoRotate, fixFileDates } from '../api';
 
 interface ExecuteOperation {
   key: string;
@@ -7,7 +7,7 @@ interface ExecuteOperation {
   label: string;
   detail: string;
   files: string[];
-  action: 'trash' | 'orientation' | 'rename';
+  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates';
   actionData?: unknown;
 }
 
@@ -40,9 +40,15 @@ export function ExecuteScreen({ operations, onComplete }: ExecuteScreenProps): R
       } else if (op.action === 'orientation') {
         const data = op.actionData as Array<{ path: string; orientation: number }>;
         await fixOrientation(data);
+      } else if (op.action === 'auto-rotate') {
+        const data = op.actionData as Array<{ path: string; rotation: number }>;
+        await autoRotate(data);
       } else if (op.action === 'rename') {
         const data = op.actionData as Array<{ old: string; new: string }>;
         await executeRenames(data);
+      } else if (op.action === 'fix-dates') {
+        const data = op.actionData as Array<{ path: string; target_date: string }>;
+        await fixFileDates(data);
       }
     }
 

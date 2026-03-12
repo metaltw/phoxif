@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Screen, ScanResult, ThumbState } from '../types';
+import type { Screen, ScanResult, ThumbState, OrientationIssue } from '../types';
 import { SummaryCard } from './SummaryCard';
 
 interface ReviewScreenProps {
@@ -11,6 +11,8 @@ interface ReviewScreenProps {
   simStates: Map<number, ThumbState[]>;
   orientSelected: Set<string>;
   renameSelected: Set<string>;
+  dateSelected: Set<string>;
+  aiOrientIssues: OrientationIssue[];
   onNavigate: (screen: Screen) => void;
   formatSize: (bytes: number) => string;
 }
@@ -24,6 +26,8 @@ export function ReviewScreen({
   simStates,
   orientSelected,
   renameSelected,
+  dateSelected,
+  aiOrientIssues,
   onNavigate,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
@@ -59,8 +63,9 @@ export function ReviewScreen({
     });
   }
 
-  // Orientation stats
-  const orientCount = scanResult.orientation_issues.length;
+  // Orientation stats (from AI detection)
+  const orientCount = aiOrientIssues.length;
+  const orientScanned = reviewedCategories.has('orientation') || orientCount > 0;
 
   // Rename stats
   const renameCount = scanResult.rename_preview.length;
@@ -147,22 +152,24 @@ export function ReviewScreen({
           <SummaryCard
             icon={'\uD83D\uDD04'}
             title="Orientation Fix"
-            count={orientCount}
+            count={orientScanned ? orientCount : '?'}
             description={
-              orientCount > 0 ? (
+              !orientScanned ? (
+                <span>Click to scan with AI</span>
+              ) : orientCount > 0 ? (
                 <>
-                  <strong>{orientCount} photos</strong> need rotation fix<br />
+                  <strong>{orientCount} photos/videos</strong> need rotation<br />
                   {orientSelected.size} selected
                 </>
               ) : (
-                <span className="safe">All orientations are correct</span>
+                <span className="safe">All orientations correct</span>
               )
             }
-            action={orientCount > 0 ? 'Review orientation \u2192' : ''}
+            action={!orientScanned ? 'Scan with AI \u2192' : orientCount > 0 ? 'Review orientation \u2192' : ''}
             reviewed={reviewedCategories.has('orientation')}
             skipped={skippedCategories.has('orientation')}
-            noIssue={orientCount === 0}
-            onClick={orientCount > 0 ? () => onNavigate('orientation') : undefined}
+            noIssue={orientScanned && orientCount === 0}
+            onClick={() => onNavigate('orientation')}
             onSkip={() => onToggleSkip('orientation')}
           />
           <SummaryCard
@@ -178,12 +185,23 @@ export function ReviewScreen({
           <SummaryCard
             icon={'\uD83D\uDCC5'}
             title="File Dates"
-            count={'\u2713'}
-            description={<span className="safe">All dates match EXIF</span>}
-            action=""
-            reviewed={false}
-            skipped={false}
-            noIssue={true}
+            count={scanResult.date_mismatches.length}
+            description={
+              scanResult.date_mismatches.length > 0 ? (
+                <>
+                  <strong>{scanResult.date_mismatches.length} files</strong> have wrong mtime<br />
+                  {dateSelected.size} selected to fix
+                </>
+              ) : (
+                <span className="safe">All dates match EXIF</span>
+              )
+            }
+            action={scanResult.date_mismatches.length > 0 ? 'Review dates \u2192' : ''}
+            reviewed={reviewedCategories.has('dates')}
+            skipped={skippedCategories.has('dates')}
+            noIssue={scanResult.date_mismatches.length === 0}
+            onClick={scanResult.date_mismatches.length > 0 ? () => onNavigate('dates') : undefined}
+            onSkip={() => onToggleSkip('dates')}
           />
         </div>
 

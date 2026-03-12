@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import os
+import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -259,13 +262,13 @@ _ORIENTATION_LABELS: dict[int, str] = {
 }
 
 
-def find_orientation_issues(
+def find_exif_orientation_issues(
     files: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Find photo files with non-normal EXIF orientation.
 
-    Filters to photo files only and returns those whose orientation tag
-    is set to a value other than 1 (Normal).
+    Quick pre-check based on EXIF tags only (no AI). Filters to photo
+    files and returns those whose orientation tag is not 1 (Normal).
 
     Args:
         files: List of normalized file info dicts (from scan_folder).
@@ -305,3 +308,132 @@ def find_orientation_issues(
         )
 
     return issues
+
+
+# Regex for extracting date from filenames like YYYYMMDD_HHMMSS or YYYY-MM-DD_HH-MM-SS
+_FILENAME_DATE_RE = re.compile(
+    r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})[-_](\d{2})[-_]?(\d{2})[-_]?(\d{2})"
+)
+
+
+def _parse_exif_date(date_val: str | float | int | None) -> float | None:
+    """Parse an EXIF date value to a UNIX timestamp.
+
+    Handles:
+    - "YYYY:MM:DD HH:MM:SS" (standard EXIF format)
+    - "YYYY-MM-DDTHH:MM:SS" (ISO format)
+    - float/int (already a unix timestamp)
+    - None
+
+    Args:
+        date_val: Raw date value from EXIF or fallback scanner.
+
+    Returns:
+        UNIX timestamp as float, or None if unparseable.
+    """
+    if date_val is None:
+        return None
+
+    if isinstance(date_val, (int, float)):
+        return float(date_val)
+
+    if not isinstance(date_val, str):
+        return None
+
+    # EXIF format: "YYYY:MM:DD HH:MM:SS"
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(date_val, fmt)
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _parse_filename_date(filename: str) -> float | None:
+    """Try to extract a date from a filename pattern.
+
+    Matches patterns like: 20240101_120000, 2024-01-01_12-00-00, IMG_20240101_120000.
+
+    Args:
+        filename: The filename (not full path).
+
+    Returns:
+        UNIX timestamp as float, or None if no date pattern found.
+    """
+    m = _FILENAME_DATE_RE.search(filename)
+    if not m:
+        return None
+
+    try:
+        dt = datetime(
+            year=int(m.group(1)),
+            month=int(m.group(2)),
+            day=int(m.group(3)),
+            hour=int(m.group(4)),
+            minute=int(m.group(5)),
+            second=int(m.group(6)),
+            tzinfo=timezone.utc,
+        )
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def find_date_mismatches(
+    files: list[dict[str, Any]], tolerance_sec: int = 2
+) -> list[dict[str, Any]]:
+    """Find files whose mtime doesn't match their EXIF or filename date.
+
+    Args:
+        files: List of normalized file info dicts (from scan_folder).
+        tolerance_sec: Maximum allowed difference in seconds.
+
+    Returns:
+        List of mismatch dicts, each with:
+        - file: The original file info dict.
+        - exif_date: ISO string of the target date.
+        - file_mtime: ISO string of the current file mtime.
+        - source: "exif" or "filename".
+    """
+    mismatches: list[dict[str, Any]] = []
+
+    for f in files:
+        file_path = f.get("path", "")
+        if not file_path:
+            continue
+
+        # Get file mtime
+        try:
+            file_mtime = os.path.getmtime(file_path)
+        except OSError:
+            continue
+
+        # Try EXIF date first
+        exif_ts = _parse_exif_date(f.get("date"))
+        source = "exif"
+
+        # If no EXIF date, try filename
+        if exif_ts is None:
+            exif_ts = _parse_filename_date(f.get("filename", ""))
+            source = "filename"
+
+        # Skip if no date available
+        if exif_ts is None:
+            continue
+
+        # Check mismatch
+        if abs(file_mtime - exif_ts) > tolerance_sec:
+            target_dt = datetime.fromtimestamp(exif_ts, tz=timezone.utc)
+            mtime_dt = datetime.fromtimestamp(file_mtime, tz=timezone.utc)
+            mismatches.append(
+                {
+                    "file": f,
+                    "exif_date": target_dt.isoformat(),
+                    "file_mtime": mtime_dt.isoformat(),
+                    "source": source,
+                }
+            )
+
+    return mismatches

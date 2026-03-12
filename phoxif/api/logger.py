@@ -235,6 +235,34 @@ class OperationLogger:
                     "detail": "No old orientation value to restore",
                 }
 
+            elif op_type == "DATE_FIX":
+                import os
+                from datetime import datetime
+
+                old_date_str = op["old_value"]
+                if old_date_str:
+                    old_dt = datetime.fromisoformat(old_date_str)
+                    old_ts = old_dt.timestamp()
+                    target = Path(file_path)
+                    if target.exists():
+                        stat = target.stat()
+                        os.utime(target, (stat.st_atime, old_ts))
+                        return {
+                            "op": op,
+                            "success": True,
+                            "detail": f"Date restored for {target.name}",
+                        }
+                    return {
+                        "op": op,
+                        "success": False,
+                        "detail": f"File not found: {file_path}",
+                    }
+                return {
+                    "op": op,
+                    "success": False,
+                    "detail": "No old date value to restore",
+                }
+
             elif op_type == "CONVERT":
                 # Delete the converted file (original was never touched)
                 converted = Path(op["new_value"]) if op["new_value"] else None

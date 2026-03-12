@@ -1,19 +1,283 @@
-"""AI-based visual orientation detection using Gemini Vision API."""
+"""Orientation detection using local ONNX model with optional Gemini fallback."""
 
 import io
 import json
 import logging
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
-# Supported image extensions for orientation detection
+# Supported extensions for orientation detection
 _PHOTO_EXTS = {".jpg", ".jpeg", ".heic", ".png", ".tiff", ".tif", ".webp", ".bmp"}
+_VIDEO_EXTS = {".mov", ".mp4", ".avi", ".mkv", ".m4v"}
+_ALL_SUPPORTED_EXTS = _PHOTO_EXTS | _VIDEO_EXTS
 
-# Prompt for Gemini Vision
+# ONNX model config
+_ONNX_REPO = "DuarteBarbosa/deep-image-orientation-detection"
+_ONNX_FILE = "orientation_model_v2_0.9882.onnx"
+_IMAGE_SIZE = 384
+_CLASS_TO_ROTATION = {0: 0, 1: 90, 2: 180, 3: 270}
+
+# Lazy-loaded ONNX session singleton
+_onnx_session = None
+
+
+def _get_onnx_session():  # type: ignore[no-untyped-def]
+    """Get or create the ONNX inference session (lazy singleton).
+
+    Downloads model from HuggingFace Hub on first use (~77MB).
+
+    Returns:
+        ONNX InferenceSession, or None if unavailable.
+    """
+    global _onnx_session  # noqa: PLW0603
+    if _onnx_session is not None:
+        return _onnx_session
+
+    try:
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+
+        model_path = hf_hub_download(repo_id=_ONNX_REPO, filename=_ONNX_FILE)
+        _onnx_session = ort.InferenceSession(
+            model_path,
+            providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        )
+        logger.info("ONNX orientation model loaded from %s", model_path)
+        return _onnx_session
+    except Exception as e:
+        logger.warning("Failed to load ONNX orientation model: %s", e)
+        return None
+
+
+def _preprocess_for_onnx(file_path: Path) -> np.ndarray | None:
+    """Load and preprocess an image for the ONNX orientation model.
+
+    Args:
+        file_path: Path to image file.
+
+    Returns:
+        Float32 tensor [1, 3, 384, 384], or None on failure.
+    """
+    from PIL import Image, ImageOps
+
+    try:
+        ext = file_path.suffix.lower()
+
+        # Video: extract frame
+        if ext in _VIDEO_EXTS:
+            frame_bytes = _extract_video_frame(file_path)
+            if frame_bytes is None:
+                return None
+            img = Image.open(io.BytesIO(frame_bytes))
+        # HEIC: convert via sips
+        elif ext in {".heic", ".heif"}:
+            jpg_bytes = _convert_heic_to_jpeg(file_path)
+            if jpg_bytes is None:
+                return None
+            img = Image.open(io.BytesIO(jpg_bytes))
+        else:
+            img = Image.open(file_path)
+
+        # Apply EXIF orientation so the model sees what the viewer shows.
+        # This way we detect images that LOOK wrong to the user.
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        # Resize + center crop to 384x384
+        img = img.resize((416, 416), Image.BILINEAR)
+        img = img.crop((16, 16, 400, 400))
+
+        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = (arr - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+        return arr.transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32)
+    except Exception as e:
+        logger.warning("Preprocessing failed for %s: %s", file_path, e)
+        return None
+
+
+def detect_orientation_local(file_path: Path) -> dict[str, Any] | None:
+    """Detect orientation using local ONNX model.
+
+    Args:
+        file_path: Path to image or video file.
+
+    Returns:
+        Dict with rotation (0/90/180/270) and confidence, or None.
+    """
+    session = _get_onnx_session()
+    if session is None:
+        return None
+
+    tensor = _preprocess_for_onnx(file_path)
+    if tensor is None:
+        return None
+
+    try:
+        logits = session.run(None, {"input": tensor})[0][0]
+        pred = int(np.argmax(logits))
+        probs = np.exp(logits) / np.sum(np.exp(logits))
+        return {
+            "rotation": _CLASS_TO_ROTATION[pred],
+            "confidence": float(probs[pred]),
+        }
+    except Exception as e:
+        logger.warning("ONNX inference failed for %s: %s", file_path, e)
+        return None
+
+
+def detect_orientation_batch(
+    files: list[dict[str, Any]],
+    confidence_threshold: float = 0.7,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    api_key: str | None = None,
+    model: str = "gemini-2.5-flash",
+) -> list[dict[str, Any]]:
+    """Detect orientation issues for a batch of files.
+
+    Uses local ONNX model (fast, no API key). Falls back to Gemini API
+    if ONNX is unavailable and api_key is provided.
+
+    Args:
+        files: List of normalized file info dicts (from scan_folder).
+        confidence_threshold: Minimum confidence to report as issue.
+        progress_callback: Optional callback(current, total, filename).
+        api_key: Optional Google API key for Gemini fallback.
+        model: Gemini model name (only used for fallback).
+
+    Returns:
+        List of dicts with file, rotation, confidence.
+    """
+    issues: list[dict[str, Any]] = []
+    use_local = _get_onnx_session() is not None
+
+    if not use_local and not api_key:
+        logger.error("No ONNX model and no API key — cannot detect orientation")
+        return []
+
+    if use_local:
+        logger.info("Using local ONNX model for orientation detection")
+    else:
+        logger.info("ONNX unavailable, falling back to Gemini API")
+
+    # Filter to supported files
+    candidates = [
+        f for f in files if Path(f["path"]).suffix.lower() in _ALL_SUPPORTED_EXTS
+    ]
+    total = len(candidates)
+
+    for idx, f in enumerate(candidates):
+        filename = Path(f["path"]).name
+        if progress_callback is not None:
+            progress_callback(idx + 1, total, filename)
+
+        file_path = Path(f["path"])
+
+        if use_local:
+            result = detect_orientation_local(file_path)
+        else:
+            result = _detect_gemini_with_fallback(file_path, api_key, model)  # type: ignore[arg-type]
+
+        if result is None or "error" in result:
+            continue
+
+        if result["rotation"] != 0 and result["confidence"] >= confidence_threshold:
+            issues.append(
+                {
+                    "file": f,
+                    "rotation": result["rotation"],
+                    "confidence": result["confidence"],
+                }
+            )
+
+    return issues
+
+
+# --- Video frame extraction ---
+
+def _extract_video_frame(file_path: Path, max_size: int = 512) -> bytes | None:
+    """Extract a single frame from a video file via ffmpeg.
+
+    Args:
+        file_path: Path to the video file.
+        max_size: Maximum dimension in pixels for the output frame.
+
+    Returns:
+        JPEG bytes, or None if extraction failed.
+    """
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        subprocess.run(
+            [
+                "ffmpeg", "-i", str(file_path),
+                "-vframes", "1",
+                "-vf", f"scale={max_size}:-1",
+                "-q:v", "5",
+                tmp_path, "-y",
+            ],
+            capture_output=True,
+            timeout=15,
+            check=True,
+        )
+        data = Path(tmp_path).read_bytes()
+        Path(tmp_path).unlink(missing_ok=True)
+        return data if data else None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+        return None
+
+
+def _convert_heic_to_jpeg(file_path: Path, max_size: int = 512) -> bytes | None:
+    """Convert HEIC to JPEG via sips (macOS).
+
+    Args:
+        file_path: Path to HEIC file.
+        max_size: Maximum dimension.
+
+    Returns:
+        JPEG bytes, or None.
+    """
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        subprocess.run(
+            [
+                "sips", "-s", "format", "jpeg",
+                "-s", "formatOptions", "50",
+                "-Z", str(max_size),
+                str(file_path), "--out", tmp_path,
+            ],
+            capture_output=True,
+            timeout=10,
+            check=True,
+        )
+        data = Path(tmp_path).read_bytes()
+        Path(tmp_path).unlink(missing_ok=True)
+        return data
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+        return None
+
+
+# --- Gemini API fallback ---
+
+_MODEL_FALLBACK_CHAIN = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-3-flash-preview",
+]
+
 _ORIENTATION_PROMPT = """\
 Analyze this photo's orientation. Is it displayed correctly, or does it need \
 to be rotated?
@@ -33,60 +297,30 @@ gravity (objects hanging down), buildings, trees growing upward, sky position.
 
 
 def _make_thumbnail(file_path: Path, max_size: int = 512) -> bytes | None:
-    """Create a JPEG thumbnail for sending to the API.
-
-    Uses sips on macOS for HEIC support, falls back to PIL.
+    """Create a JPEG thumbnail for Gemini API.
 
     Args:
-        file_path: Path to the image file.
+        file_path: Path to image or video file.
         max_size: Maximum dimension in pixels.
 
     Returns:
-        JPEG bytes, or None if conversion failed.
+        JPEG bytes, or None.
     """
     ext = file_path.suffix.lower()
 
-    # HEIC: use sips (macOS) to convert
-    if ext in {".heic", ".heif"}:
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = tmp.name
-            subprocess.run(
-                [
-                    "sips",
-                    "-s",
-                    "format",
-                    "jpeg",
-                    "-s",
-                    "formatOptions",
-                    "50",
-                    "-Z",
-                    str(max_size),
-                    str(file_path),
-                    "--out",
-                    tmp_path,
-                ],
-                capture_output=True,
-                timeout=10,
-                check=True,
-            )
-            data = Path(tmp_path).read_bytes()
-            Path(tmp_path).unlink(missing_ok=True)
-            return data
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            FileNotFoundError,
-        ):
-            return None
+    if ext in _VIDEO_EXTS:
+        return _extract_video_frame(file_path, max_size)
 
-    # Other formats: use PIL
+    if ext in {".heic", ".heif"}:
+        return _convert_heic_to_jpeg(file_path, max_size)
+
     try:
         from PIL import Image
 
         with Image.open(file_path) as img:
-            # Don't apply EXIF rotation — we want to see the raw pixels
             img.thumbnail((max_size, max_size))
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=50)
             return buf.getvalue()
@@ -94,21 +328,20 @@ def _make_thumbnail(file_path: Path, max_size: int = 512) -> bytes | None:
         return None
 
 
-def detect_orientation(
+def _detect_gemini(
     image_path: Path,
     api_key: str,
     model: str = "gemini-2.5-flash",
 ) -> dict[str, Any] | None:
-    """Detect visual orientation of a single image using Gemini Vision.
+    """Detect orientation via Gemini Vision API.
 
     Args:
-        image_path: Path to the image file.
+        image_path: Path to image or video file.
         api_key: Google Gemini API key.
         model: Gemini model name.
 
     Returns:
-        Dict with keys: rotation (0/90/180/270), confidence (0.0-1.0),
-        or None if detection failed.
+        Dict with rotation and confidence, or error sentinel, or None.
     """
     thumb_bytes = _make_thumbnail(image_path)
     if thumb_bytes is None:
@@ -128,7 +361,6 @@ def detect_orientation(
         )
 
         text = response.text.strip()
-        # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text[3:]
             if text.endswith("```"):
@@ -140,65 +372,37 @@ def detect_orientation(
         confidence = float(result.get("confidence", 0.0))
 
         if rotation not in (0, 90, 180, 270):
-            # Snap to nearest valid value
             rotation = min((0, 90, 180, 270), key=lambda x: abs(x - rotation))
 
         return {"rotation": rotation, "confidence": confidence}
     except Exception as e:
-        logger.warning("Orientation detection failed for %s: %s", image_path, e)
+        logger.warning("Gemini detection failed for %s: %s", image_path, e)
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            return {"error": "rate_limit"}
         return None
 
 
-def detect_orientation_batch(
-    files: list[dict[str, Any]],
+def _detect_gemini_with_fallback(
+    image_path: Path,
     api_key: str,
-    model: str = "gemini-2.5-flash",
-    confidence_threshold: float = 0.7,
-) -> list[dict[str, Any]]:
-    """Detect orientation issues for a batch of image files.
-
-    Only checks images where EXIF Orientation is missing or 1 (Normal),
-    since those are the ones that might be visually wrong without
-    the EXIF tag to compensate.
+    preferred_model: str = "gemini-2.5-flash",
+) -> dict[str, Any] | None:
+    """Try Gemini detection with model fallback on rate limit.
 
     Args:
-        files: List of normalized file info dicts (from scan_folder).
-        api_key: Google Gemini API key.
-        model: Gemini model name.
-        confidence_threshold: Minimum confidence to report as issue.
+        image_path: Path to image or video file.
+        api_key: Google API key.
+        preferred_model: Preferred model name.
 
     Returns:
-        List of dicts, each with:
-        - file: The original file info dict.
-        - rotation: Suggested rotation in degrees (90/180/270).
-        - confidence: Detection confidence (0.0-1.0).
+        Dict with rotation and confidence, or None.
     """
-    issues: list[dict[str, Any]] = []
-
-    for f in files:
-        ext = Path(f["path"]).suffix.lower()
-        if ext not in _PHOTO_EXTS:
-            continue
-
-        # Only check files where EXIF orientation is missing or normal,
-        # since files with non-normal orientation are already handled
-        # by the EXIF-based detection.
-        orientation = f.get("orientation")
-        if orientation is not None and orientation != 1:
-            continue
-
-        result = detect_orientation(Path(f["path"]), api_key, model)
+    chain = [preferred_model] + [m for m in _MODEL_FALLBACK_CHAIN if m != preferred_model]
+    for m in chain:
+        result = _detect_gemini(image_path, api_key, m)
         if result is None:
-            continue
-
-        # Only report if rotation is needed and confidence is high enough
-        if result["rotation"] != 0 and result["confidence"] >= confidence_threshold:
-            issues.append(
-                {
-                    "file": f,
-                    "rotation": result["rotation"],
-                    "confidence": result["confidence"],
-                }
-            )
-
-    return issues
+            return None
+        if "error" not in result:
+            return result
+        logger.info("Rate limited on %s, trying next model", m)
+    return None

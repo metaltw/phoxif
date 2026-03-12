@@ -29,8 +29,8 @@ export interface SimilarGroup {
 
 export interface OrientationIssue {
   file: FileInfo;
-  current_orientation: number;
-  label: string;
+  rotation: number;       // 90, 180, 270
+  confidence: number;     // 0.0-1.0
 }
 
 export interface RenamePreview {
@@ -38,6 +38,13 @@ export interface RenamePreview {
   old_name: string;
   new_name: string;
   new_path: string;
+}
+
+export interface DateMismatch {
+  file: FileInfo;
+  exif_date: string;
+  file_mtime: string;
+  source: 'exif' | 'filename';
 }
 
 export interface ScanResult {
@@ -48,10 +55,11 @@ export interface ScanResult {
   similar_groups: SimilarGroup[];
   orientation_issues: OrientationIssue[];
   rename_preview: RenamePreview[];
+  date_mismatches: DateMismatch[];
 }
 
 export interface Operation {
-  type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation';
+  type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates';
   file: string;
   old_value: string;
   new_value: string;
@@ -64,6 +72,6 @@ export interface Session {
   undone: boolean;
 }
 
-export type Screen = 'scan' | 'review' | 'duplicates' | 'similar' | 'orientation' | 'rename' | 'confirm' | 'execute' | 'done' | 'history';
+export type Screen = 'scan' | 'review' | 'duplicates' | 'similar' | 'orientation' | 'rename' | 'dates' | 'confirm' | 'execute' | 'done' | 'history';
 
 export type ThumbState = 'keep' | 'trash' | 'neutral';
