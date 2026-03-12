@@ -16,6 +16,8 @@
   --text: #c8cdd8;
   --dim: #6b7280;
   --bright: #f0f2f5;
+  --fg: var(--text);
+  --fg2: var(--dim);
   --border: #2a2d3e;
   --r: 12px;
 }

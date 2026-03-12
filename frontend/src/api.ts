@@ -232,13 +232,18 @@ export async function detectOrientation(
       if (line.startsWith('event: ')) {
         eventType = line.slice(7);
       } else if (line.startsWith('data: ')) {
-        const data = JSON.parse(line.slice(6));
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
         if (eventType === 'progress' && onProgress) {
-          onProgress(data as DetectProgressEvent);
+          onProgress(data as unknown as DetectProgressEvent);
         } else if (eventType === 'result') {
-          result = data as DetectOrientationResult;
+          result = data as unknown as DetectOrientationResult;
         } else if (eventType === 'error') {
-          throw new Error(data.message || 'Detection failed');
+          throw new Error((data.message as string) || 'Detection failed');
         }
       }
     }

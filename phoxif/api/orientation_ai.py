@@ -5,6 +5,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Supported extensions for orientation detection
-_PHOTO_EXTS = {".jpg", ".jpeg", ".heic", ".png", ".tiff", ".tif", ".webp", ".bmp"}
+_PHOTO_EXTS = {".jpg", ".jpeg", ".heic", ".heif", ".png", ".tiff", ".tif", ".webp", ".bmp"}
 _VIDEO_EXTS = {".mov", ".mp4", ".avi", ".mkv", ".m4v"}
 _ALL_SUPPORTED_EXTS = _PHOTO_EXTS | _VIDEO_EXTS
 
@@ -26,12 +27,14 @@ _CLASS_TO_ROTATION = {0: 0, 1: 90, 2: 180, 3: 270}
 
 # Lazy-loaded ONNX session singleton
 _onnx_session = None
+_onnx_lock = threading.Lock()
 
 
 def _get_onnx_session():  # type: ignore[no-untyped-def]
     """Get or create the ONNX inference session (lazy singleton).
 
     Downloads model from HuggingFace Hub on first use (~77MB).
+    Uses double-checked locking to avoid race conditions.
 
     Returns:
         ONNX InferenceSession, or None if unavailable.
@@ -40,20 +43,25 @@ def _get_onnx_session():  # type: ignore[no-untyped-def]
     if _onnx_session is not None:
         return _onnx_session
 
-    try:
-        import onnxruntime as ort
-        from huggingface_hub import hf_hub_download
+    with _onnx_lock:
+        # Double-check after acquiring lock
+        if _onnx_session is not None:
+            return _onnx_session
 
-        model_path = hf_hub_download(repo_id=_ONNX_REPO, filename=_ONNX_FILE)
-        _onnx_session = ort.InferenceSession(
-            model_path,
-            providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
-        )
-        logger.info("ONNX orientation model loaded from %s", model_path)
-        return _onnx_session
-    except Exception as e:
-        logger.warning("Failed to load ONNX orientation model: %s", e)
-        return None
+        try:
+            import onnxruntime as ort
+            from huggingface_hub import hf_hub_download
+
+            model_path = hf_hub_download(repo_id=_ONNX_REPO, filename=_ONNX_FILE)
+            _onnx_session = ort.InferenceSession(
+                model_path,
+                providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+            )
+            logger.info("ONNX orientation model loaded from %s", model_path)
+            return _onnx_session
+        except Exception as e:
+            logger.warning("Failed to load ONNX orientation model: %s", e)
+            return None
 
 
 def _preprocess_for_onnx(file_path: Path) -> np.ndarray | None:
@@ -120,6 +128,7 @@ def detect_orientation_local(file_path: Path) -> dict[str, Any] | None:
 
     try:
         logits = session.run(None, {"input": tensor})[0][0]
+        logits = logits - np.max(logits)  # numerical stability for softmax
         pred = int(np.argmax(logits))
         probs = np.exp(logits) / np.sum(np.exp(logits))
         return {
@@ -315,9 +324,10 @@ def _make_thumbnail(file_path: Path, max_size: int = 512) -> bytes | None:
         return _convert_heic_to_jpeg(file_path, max_size)
 
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         with Image.open(file_path) as img:
+            img = ImageOps.exif_transpose(img)
             img.thumbnail((max_size, max_size))
             if img.mode in ("RGBA", "P", "LA"):
                 img = img.convert("RGB")

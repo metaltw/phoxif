@@ -38,10 +38,12 @@ export function OrientationDetail({
     if (lightboxIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setLightboxIndex(null);
+      if (e.key === 'ArrowLeft' && lightboxIndex > 0) setLightboxIndex(lightboxIndex - 1);
+      if (e.key === 'ArrowRight' && lightboxIndex < aiOrientIssues.length - 1) setLightboxIndex(lightboxIndex + 1);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [lightboxIndex]);
+  }, [lightboxIndex, aiOrientIssues.length]);
 
   const handleDetect = useCallback(async () => {
     setPhase('scanning');
@@ -123,7 +125,9 @@ export function OrientationDetail({
           <h2>Orientation Detection</h2>
           <span className="d-meta">
             {hasScanned
-              ? `${aiOrientIssues.length} issues found in ${scannedCount} files`
+              ? scannedCount > 0
+                ? `${aiOrientIssues.length} issues found in ${scannedCount} files`
+                : `${aiOrientIssues.length} issues found`
               : 'Detect photos that need rotation correction'}
           </span>
         </div>
