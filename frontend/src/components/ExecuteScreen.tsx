@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { trashFiles, fixOrientation, executeRenames, autoRotate, fixFileDates } from '../api';
+import { trashFiles, fixOrientation, executeRenames, autoRotate, fixFileDates, moveNonPhotos } from '../api';
 
 interface ExecuteOperation {
   key: string;
@@ -7,7 +7,7 @@ interface ExecuteOperation {
   label: string;
   detail: string;
   files: string[];
-  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates';
+  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates' | 'move-non-photos';
   actionData?: unknown;
 }
 
@@ -49,6 +49,9 @@ export function ExecuteScreen({ operations, onComplete }: ExecuteScreenProps): R
       } else if (op.action === 'fix-dates') {
         const data = op.actionData as Array<{ path: string; target_date: string }>;
         await fixFileDates(data);
+      } else if (op.action === 'move-non-photos') {
+        const data = op.actionData as { files: Array<{ path: string; category: string }>; baseDir: string };
+        await moveNonPhotos(data.files, data.baseDir);
       }
     }
 

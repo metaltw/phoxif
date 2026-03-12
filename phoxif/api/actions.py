@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -409,6 +410,86 @@ def auto_rotate(
             failed.append({"path": path_str, "error": f"Tool not found: {e}"})
         except RuntimeError as e:
             failed.append({"path": path_str, "error": str(e)})
+        except Exception as e:
+            failed.append({"path": path_str, "error": str(e)})
+
+    return {
+        "success": success,
+        "failed": failed,
+        "count": len(success),
+    }
+
+
+def move_non_photos(
+    file_items: list[dict[str, Any]],
+    base_dir: str,
+    logger: OperationLogger,
+) -> dict[str, Any]:
+    """Move non-photo files to category subfolders.
+
+    Moves files to `_non_photos/{category}/` under the base directory.
+    Creates directories as needed. Preserves file modification times.
+
+    Args:
+        file_items: List of dicts with keys:
+            - path: Absolute file path.
+            - category: Category string (screenshot, messaging, etc.).
+        base_dir: Root scan directory for creating subfolders.
+        logger: Operation logger for undo support.
+
+    Returns:
+        Dict with keys:
+        - success: List of successfully moved paths.
+        - failed: List of {path, error} for failures.
+        - count: Number of files moved.
+    """
+    success: list[str] = []
+    failed: list[dict[str, str]] = []
+    non_photos_dir = Path(base_dir) / "_non_photos"
+
+    for item in file_items:
+        path_str = item["path"]
+        category = item["category"]
+        path = Path(path_str)
+
+        if not path.exists():
+            failed.append({"path": path_str, "error": "File not found"})
+            continue
+
+        target_dir = non_photos_dir / category
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / path.name
+
+        # Handle name collisions (cap at 9999 to avoid infinite loop)
+        if target.exists():
+            stem = path.stem
+            ext = path.suffix
+            for counter in range(1, 10000):
+                target = target_dir / f"{stem}_{counter}{ext}"
+                if not target.exists():
+                    break
+            else:
+                failed.append({"path": path_str, "error": "Too many name collisions"})
+                continue
+
+        try:
+            stat = path.stat()
+            shutil.move(str(path), str(target))
+
+            # Preserve modification time (best effort)
+            try:
+                os.utime(target, (stat.st_atime, stat.st_mtime))
+            except OSError:
+                pass
+
+            logger.log_operation(
+                op_type="MOVE",
+                file=path_str,
+                old_value=path_str,
+                new_value=str(target),
+                detail=f"Moved to _non_photos/{category}/: {path.name}",
+            )
+            success.append(path_str)
         except Exception as e:
             failed.append({"path": path_str, "error": str(e)})
 

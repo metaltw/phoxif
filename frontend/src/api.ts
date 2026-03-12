@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch } from './types';
+import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem } from './types';
 
 const BASE_URL = '/api';
 
@@ -58,6 +58,7 @@ function mapFile(f: ScanFileData): FileInfo {
 }
 
 interface ScanData {
+  base_dir?: string;
   files: ScanFileData[];
   stats: {
     total_files: number;
@@ -92,6 +93,11 @@ interface ScanData {
     exif_date: string;
     file_mtime: string;
     source: 'exif' | 'filename';
+  }>;
+  non_photos?: Array<{
+    file: ScanFileData;
+    category: 'screenshot' | 'screen_recording' | 'messaging' | 'document';
+    reason: string;
   }>;
   exiftool_available: boolean;
   duplicate_stats: {
@@ -137,15 +143,22 @@ export async function scanFolder(path: string): Promise<ScanResult> {
     source: d.source,
   }));
 
+  const non_photos: NonPhotoItem[] = (data.non_photos ?? []).map(n => ({
+    file: mapFile(n.file),
+    category: n.category,
+    reason: n.reason,
+  }));
+
   return {
     total_files: data.stats.total_files,
     total_size: data.stats.total_size,
-    base_dir: path,
+    base_dir: data.base_dir ?? path,
     duplicates,
     similar_groups,
     orientation_issues: [],
     rename_preview,
     date_mismatches,
+    non_photos,
   };
 }
 
@@ -266,6 +279,16 @@ export async function autoRotate(files: Array<{ path: string; rotation: number }
   return request<{ ok: boolean }>('/orientation/auto-rotate', {
     method: 'POST',
     body: JSON.stringify({ files }),
+  });
+}
+
+export async function moveNonPhotos(
+  files: Array<{ path: string; category: string }>,
+  baseDir: string,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/non-photos/move', {
+    method: 'POST',
+    body: JSON.stringify({ files, base_dir: baseDir }),
   });
 }
 

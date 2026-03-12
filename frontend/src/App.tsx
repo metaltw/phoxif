@@ -8,6 +8,7 @@ import { SimilarDetail } from './components/SimilarDetail';
 import { OrientationDetail } from './components/OrientationDetail';
 import { RenameDetail } from './components/RenameDetail';
 import { DateDetail } from './components/DateDetail';
+import { NonPhotosDetail } from './components/NonPhotosDetail';
 import { ConfirmScreen } from './components/ConfirmScreen';
 import { ExecuteScreen } from './components/ExecuteScreen';
 import { DoneScreen } from './components/DoneScreen';
@@ -21,7 +22,7 @@ function formatSize(bytes: number): string {
 }
 
 const stepMap: Record<Screen, number> = {
-  scan: 1, review: 2, duplicates: 2, similar: 2, orientation: 2, rename: 2, dates: 2,
+  scan: 1, review: 2, duplicates: 2, similar: 2, orientation: 2, rename: 2, dates: 2, 'non-photos': 2,
   confirm: 3, execute: 4, done: 5, history: 5,
 };
 
@@ -31,7 +32,7 @@ interface ExecuteOperation {
   label: string;
   detail: string;
   files: string[];
-  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates';
+  action: 'trash' | 'orientation' | 'auto-rotate' | 'rename' | 'fix-dates' | 'move-non-photos';
   actionData?: unknown;
 }
 
@@ -54,6 +55,8 @@ export function App(): React.JSX.Element {
   const [renameSelected, setRenameSelected] = useState<Set<string>>(new Set());
   // Date fix selected paths
   const [dateSelected, setDateSelected] = useState<Set<string>>(new Set());
+  // Non-photos selected paths
+  const [nonPhotoSelected, setNonPhotoSelected] = useState<Set<string>>(new Set());
   // Skipped categories (reviewed but user wants to bypass)
   const [skippedCategories, setSkippedCategories] = useState<Set<string>>(new Set());
   // Confirm toggles and operation order
@@ -102,6 +105,9 @@ export function App(): React.JSX.Element {
 
     // Init date fix selection (all selected by default)
     setDateSelected(new Set(result.date_mismatches.map(d => d.file.path)));
+
+    // Init non-photo selection (all selected by default)
+    setNonPhotoSelected(new Set(result.non_photos.map(n => n.file.path)));
 
     setReviewedCategories(new Set());
     setConfirmToggles({});
@@ -195,10 +201,34 @@ export function App(): React.JSX.Element {
       }
     }
 
-    // Rename
+    // Move non-photos (before rename to avoid path conflicts)
+    if (reviewedCategories.has('non-photos') && !skippedCategories.has('non-photos') && nonPhotoSelected.size > 0) {
+      const selectedItems = scanResult.non_photos.filter(
+        n => nonPhotoSelected.has(n.file.path)
+      );
+      if (selectedItems.length > 0) {
+        ops.push({
+          key: 'move-nonphotos',
+          icon: '\uD83D\uDCC2',
+          label: `Move ${selectedItems.length} non-photo files`,
+          detail: 'To _non_photos/ subfolders',
+          files: selectedItems.map(n => n.file.path),
+          action: 'move-non-photos',
+          actionData: {
+            files: selectedItems.map(n => ({
+              path: n.file.path,
+              category: n.category,
+            })),
+            baseDir: scanResult.base_dir,
+          },
+        });
+      }
+    }
+
+    // Rename (exclude files being moved to _non_photos/)
     if (reviewedCategories.has('rename') && !skippedCategories.has('rename') && renameSelected.size > 0) {
       const selectedRenames = scanResult.rename_preview.filter(
-        r => renameSelected.has(r.file.path)
+        r => renameSelected.has(r.file.path) && !nonPhotoSelected.has(r.file.path)
       );
       if (selectedRenames.length > 0) {
         ops.push({
@@ -216,10 +246,10 @@ export function App(): React.JSX.Element {
       }
     }
 
-    // Fix dates (always last before sort)
+    // Fix dates (exclude files being moved, always last before sort)
     if (reviewedCategories.has('dates') && !skippedCategories.has('dates') && dateSelected.size > 0) {
       const selectedDates = scanResult.date_mismatches.filter(
-        d => dateSelected.has(d.file.path)
+        d => dateSelected.has(d.file.path) && !nonPhotoSelected.has(d.file.path)
       );
       if (selectedDates.length > 0) {
         ops.push({
@@ -247,7 +277,7 @@ export function App(): React.JSX.Element {
     }
 
     return ops;
-  }, [scanResult, reviewedCategories, skippedCategories, dupStates, simStates, orientSelected, renameSelected, dateSelected, operationOrder, aiOrientIssues]);
+  }, [scanResult, reviewedCategories, skippedCategories, dupStates, simStates, orientSelected, renameSelected, dateSelected, nonPhotoSelected, operationOrder, aiOrientIssues]);
 
   const toggleSkip = useCallback((category: string) => {
     setSkippedCategories(prev => {
@@ -289,6 +319,7 @@ export function App(): React.JSX.Element {
           orientSelected={orientSelected}
           renameSelected={renameSelected}
           dateSelected={dateSelected}
+          nonPhotoSelected={nonPhotoSelected}
           aiOrientIssues={aiOrientIssues}
           onNavigate={navigateTo}
           formatSize={formatSize}
@@ -379,6 +410,23 @@ export function App(): React.JSX.Element {
         />
       )}
 
+      {screen === 'non-photos' && scanResult && (
+        <NonPhotosDetail
+          nonPhotos={scanResult.non_photos}
+          selectedPaths={nonPhotoSelected}
+          onSelectionChange={setNonPhotoSelected}
+          formatSize={formatSize}
+          onBack={() => {
+            markReviewed('non-photos');
+            navigateTo('review');
+          }}
+          onDone={() => {
+            markReviewed('non-photos');
+            navigateTo('review');
+          }}
+        />
+      )}
+
       {screen === 'confirm' && (
         <ConfirmScreen
           operations={buildOperations()}
@@ -414,6 +462,7 @@ export function App(): React.JSX.Element {
             setOrientSelected(new Set());
             setRenameSelected(new Set());
             setDateSelected(new Set());
+            setNonPhotoSelected(new Set());
             setConfirmToggles({});
             setOperationOrder([]);
             navigateTo('scan');

@@ -47,6 +47,12 @@ export interface DateMismatch {
   source: 'exif' | 'filename';
 }
 
+export interface NonPhotoItem {
+  file: FileInfo;
+  category: 'screenshot' | 'screen_recording' | 'messaging' | 'document';
+  reason: string;
+}
+
 export interface ScanResult {
   total_files: number;
   total_size: number;
@@ -56,10 +62,11 @@ export interface ScanResult {
   orientation_issues: OrientationIssue[];
   rename_preview: RenamePreview[];
   date_mismatches: DateMismatch[];
+  non_photos: NonPhotoItem[];
 }
 
 export interface Operation {
-  type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates';
+  type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates' | 'move-non-photos';
   file: string;
   old_value: string;
   new_value: string;
@@ -72,6 +79,6 @@ export interface Session {
   undone: boolean;
 }
 
-export type Screen = 'scan' | 'review' | 'duplicates' | 'similar' | 'orientation' | 'rename' | 'dates' | 'confirm' | 'execute' | 'done' | 'history';
+export type Screen = 'scan' | 'review' | 'duplicates' | 'similar' | 'orientation' | 'rename' | 'dates' | 'non-photos' | 'confirm' | 'execute' | 'done' | 'history';
 
 export type ThumbState = 'keep' | 'trash' | 'neutral';

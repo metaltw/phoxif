@@ -12,6 +12,7 @@ interface ReviewScreenProps {
   orientSelected: Set<string>;
   renameSelected: Set<string>;
   dateSelected: Set<string>;
+  nonPhotoSelected: Set<string>;
   aiOrientIssues: OrientationIssue[];
   onNavigate: (screen: Screen) => void;
   formatSize: (bytes: number) => string;
@@ -27,6 +28,7 @@ export function ReviewScreen({
   orientSelected,
   renameSelected,
   dateSelected,
+  nonPhotoSelected,
   aiOrientIssues,
   onNavigate,
   formatSize,
@@ -171,6 +173,30 @@ export function ReviewScreen({
             noIssue={orientScanned && orientCount === 0}
             onClick={() => onNavigate('orientation')}
             onSkip={() => onToggleSkip('orientation')}
+          />
+          <SummaryCard
+            icon={'\uD83D\uDCC2'}
+            title="Non-Photo Files"
+            count={scanResult.non_photos.length}
+            description={
+              scanResult.non_photos.length > 0 ? (() => {
+                const totalSize = scanResult.non_photos.reduce((sum, n) => sum + n.file.size, 0);
+                return (
+                  <>
+                    <strong>{scanResult.non_photos.length} files</strong> ({formatSize(totalSize)})<br />
+                    {nonPhotoSelected.size} selected to move
+                  </>
+                );
+              })() : (
+                <span className="safe">No non-photo files detected</span>
+              )
+            }
+            action={scanResult.non_photos.length > 0 ? 'Review files \u2192' : ''}
+            reviewed={reviewedCategories.has('non-photos')}
+            skipped={skippedCategories.has('non-photos')}
+            noIssue={scanResult.non_photos.length === 0}
+            onClick={scanResult.non_photos.length > 0 ? () => onNavigate('non-photos') : undefined}
+            onSkip={() => onToggleSkip('non-photos')}
           />
           <SummaryCard
             icon={'\uD83C\uDFAC'}

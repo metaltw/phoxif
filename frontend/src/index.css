@@ -640,6 +640,51 @@ button { font-family: inherit; }
   padding: 2px 8px; border-radius: 4px; flex-shrink: 0;
 }
 
+/* Non-Photos */
+.nonphoto-categories { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.nonphoto-cat {
+  border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; background: var(--bg2);
+}
+.nonphoto-cat-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; cursor: pointer;
+  transition: background 0.15s;
+}
+.nonphoto-cat-header:hover { background: var(--bg-hover); }
+.nonphoto-cat-icon { font-size: 1.3rem; }
+.nonphoto-cat-title { font-weight: 600; color: var(--bright); flex: 1; }
+.nonphoto-cat-count { color: var(--amber); font-size: 0.85rem; }
+.nonphoto-cat-selected { color: var(--dim); font-size: 0.85rem; }
+.nonphoto-cat-chevron { color: var(--dim); font-size: 0.75rem; margin-left: 4px; }
+.bbtn.small { font-size: 0.75rem; padding: 2px 8px; }
+.nonphoto-cat-files { padding: 0 8px 8px; }
+.nonphoto-file {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 6px;
+  cursor: pointer; transition: background 0.15s;
+}
+.nonphoto-file:hover { background: var(--bg-hover); }
+.nonphoto-file.selected { background: var(--amber-dim); }
+.nonphoto-file.unselected { opacity: 0.6; }
+.nonphoto-checkbox {
+  font-size: 1.2rem; flex-shrink: 0; cursor: pointer;
+  color: var(--amber);
+}
+.nonphoto-thumb {
+  width: 48px; height: 48px; object-fit: cover;
+  border-radius: 4px; flex-shrink: 0;
+  background: var(--bg3);
+}
+.nonphoto-info { flex: 1; min-width: 0; }
+.nonphoto-filename {
+  font-size: 0.85rem; color: var(--bright);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nonphoto-reason {
+  font-size: 0.75rem; color: var(--dim); margin-top: 2px;
+}
+
 /* Toast */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);

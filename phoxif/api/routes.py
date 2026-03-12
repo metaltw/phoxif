@@ -15,9 +15,11 @@ from phoxif.api.actions import (
     auto_rotate,
     fix_file_dates,
     fix_orientation,
+    move_non_photos,
     rename_files,
     trash_files,
 )
+from phoxif.api.classifier import classify_non_photos
 from phoxif.api.logger import OperationLogger
 from phoxif.api.rename import generate_rename_preview
 from phoxif.api.scanner import (
@@ -115,6 +117,20 @@ class DateFixRequest(BaseModel):
     """Request body for /api/dates/fix."""
 
     files: list[DateFixItem]
+
+
+class MoveNonPhotoItem(BaseModel):
+    """Single non-photo move entry."""
+
+    path: str
+    category: str
+
+
+class MoveNonPhotosRequest(BaseModel):
+    """Request body for /api/non-photos/move."""
+
+    files: list[MoveNonPhotoItem]
+    base_dir: str
 
 
 class ApiResponse(BaseModel):
@@ -247,8 +263,10 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
         orientation_issues = find_exif_orientation_issues(result["files"])
         similar_groups = find_similar_groups(result["files"])
         date_mismatches = find_date_mismatches(result["files"])
+        non_photos = classify_non_photos(result["files"])
 
         scan_data = {
+            "base_dir": str(base_dir),
             "files": result["files"],
             "stats": result["stats"],
             "duplicates": duplicates,
@@ -277,6 +295,14 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
             "date_stats": {
                 "mismatches": len(date_mismatches),
                 "total_checked": len(result["files"]),
+            },
+            "non_photos": non_photos,
+            "non_photo_stats": {
+                "total": len(non_photos),
+                "by_category": {
+                    cat: len([n for n in non_photos if n["category"] == cat])
+                    for cat in {n["category"] for n in non_photos}
+                },
             },
         }
 
@@ -694,6 +720,52 @@ async def api_fix_dates(req: DateFixRequest) -> ApiResponse:
     try:
         file_items = [{"path": f.path, "target_date": f.target_date} for f in req.files]
         result = fix_file_dates(file_items, logger)
+        logger.save()
+        return ApiResponse(ok=True, data=result)
+    except Exception as e:
+        return ApiResponse(ok=False, error=str(e))
+
+
+@router.post("/non-photos/move", response_model=ApiResponse)
+async def api_move_non_photos(req: MoveNonPhotosRequest) -> ApiResponse:
+    """Move non-photo files to category subfolders.
+
+    Moves files to `_non_photos/{category}/` under the base directory.
+
+    Args:
+        req: Request with list of files, categories, and base directory.
+
+    Returns:
+        ApiResponse with move results.
+    """
+    if not req.files:
+        return ApiResponse(ok=False, error="No files specified")
+
+    # Validate base_dir is a scanned directory
+    if req.base_dir not in _scan_cache:
+        return ApiResponse(ok=False, error="Base directory not in scan cache")
+
+    # Validate all categories are in the allowed set
+    from phoxif.api.classifier import ALL_CATEGORIES
+
+    for f in req.files:
+        if f.category not in ALL_CATEGORIES:
+            return ApiResponse(ok=False, error=f"Invalid category: {f.category}")
+
+    # Validate all file paths are within the scanned directory
+    base = Path(req.base_dir)
+    for f in req.files:
+        try:
+            Path(f.path).resolve().relative_to(base)
+        except ValueError:
+            return ApiResponse(ok=False, error=f"File not in scan directory: {f.path}")
+
+    logger = _get_logger(req.base_dir)
+    logger.start_session()
+
+    try:
+        file_items = [{"path": f.path, "category": f.category} for f in req.files]
+        result = move_non_photos(file_items, req.base_dir, logger)
         logger.save()
         return ApiResponse(ok=True, data=result)
     except Exception as e:
