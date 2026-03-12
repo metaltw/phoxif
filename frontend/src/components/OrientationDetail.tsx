@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import type { OrientationIssue } from '../types';
 import { detectOrientation } from '../api';
 
@@ -31,6 +31,17 @@ export function OrientationDetail({
   const [progressFilename, setProgressFilename] = useState('');
 
   const hasScanned = phase === 'done';
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Close lightbox on Esc
+  useEffect(() => {
+    if (lightboxIndex === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightboxIndex(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxIndex]);
 
   const handleDetect = useCallback(async () => {
     setPhase('scanning');
@@ -206,7 +217,7 @@ export function OrientationDetail({
             </div>
 
             <div className="orient-grid">
-              {aiOrientIssues.map(issue => {
+              {aiOrientIssues.map((issue, idx) => {
                 const isSelected = selectedPaths.has(issue.file.path);
                 const badge = confidenceBadge(issue.confidence);
                 const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(issue.file.path)}`;
@@ -214,9 +225,12 @@ export function OrientationDetail({
                   <div
                     key={issue.file.path}
                     className={`orient-item${isSelected ? ' selected' : ' unselected'}`}
-                    onClick={() => toggleFile(issue.file.path)}
+                    onClick={() => setLightboxIndex(idx)}
                   >
-                    <div className="orient-checkbox">
+                    <div
+                      className="orient-checkbox"
+                      onClick={(e) => { e.stopPropagation(); toggleFile(issue.file.path); }}
+                    >
                       {isSelected ? '\u2611' : '\u2610'}
                     </div>
                     <div className="orient-compare">
@@ -256,6 +270,73 @@ export function OrientationDetail({
                 );
               })}
             </div>
+
+            {/* Lightbox modal */}
+            {lightboxIndex !== null && (() => {
+              const issue = aiOrientIssues[lightboxIndex];
+              if (!issue) return null;
+              const isSelected = selectedPaths.has(issue.file.path);
+              const badge = confidenceBadge(issue.confidence);
+              const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(issue.file.path)}&size=800`;
+              return (
+                <div className="orient-lightbox" onClick={() => setLightboxIndex(null)}>
+                  <div className="orient-lb-content" onClick={(e) => e.stopPropagation()}>
+                    <button className="orient-lb-close" onClick={() => setLightboxIndex(null)}>
+                      {'\u2715'}
+                    </button>
+                    <div className="orient-lb-compare">
+                      <div className="orient-lb-col">
+                        <div className="orient-compare-label">Before</div>
+                        <img className="orient-lb-img" src={thumbUrl} alt="Before" />
+                      </div>
+                      <div className="orient-lb-arrow">{'\u2192'}</div>
+                      <div className="orient-lb-col">
+                        <div className="orient-compare-label">After</div>
+                        <img
+                          className="orient-lb-img"
+                          src={thumbUrl}
+                          alt="After"
+                          style={{ transform: `rotate(${issue.rotation}deg)` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="orient-lb-info">
+                      <span className="orient-lb-filename">{issue.file.name}</span>
+                      <span className="orient-rotation">{rotationLabel(issue.rotation)}</span>
+                      <span
+                        className="orient-confidence"
+                        style={{ color: confidenceColor(issue.confidence) }}
+                      >
+                        {badge.label} {Math.round(issue.confidence * 100)}%
+                      </span>
+                    </div>
+                    <div className="orient-lb-actions">
+                      <button
+                        className={`orient-lb-toggle${isSelected ? ' on' : ''}`}
+                        onClick={() => toggleFile(issue.file.path)}
+                      >
+                        {isSelected ? '\u2611 Selected for rotation' : '\u2610 Not selected'}
+                      </button>
+                      <div className="orient-lb-nav">
+                        <button
+                          disabled={lightboxIndex <= 0}
+                          onClick={() => setLightboxIndex(lightboxIndex - 1)}
+                        >
+                          {'\u2190'} Prev
+                        </button>
+                        <span>{lightboxIndex + 1} / {aiOrientIssues.length}</span>
+                        <button
+                          disabled={lightboxIndex >= aiOrientIssues.length - 1}
+                          onClick={() => setLightboxIndex(lightboxIndex + 1)}
+                        >
+                          Next {'\u2192'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 

@@ -483,6 +483,66 @@ button { font-family: inherit; }
 .orient-progress { margin-top: 12px; }
 .orient-progress-text { font-size: 12px; color: var(--fg2); margin-top: 4px; }
 .orient-progress-eta { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+/* Orientation grid hover hint */
+.orient-item { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.orient-item:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+
+/* Lightbox overlay */
+.orient-lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.85);
+  display: flex; align-items: center; justify-content: center;
+  animation: lb-fadein 0.15s ease;
+}
+@keyframes lb-fadein { from { opacity: 0; } to { opacity: 1; } }
+.orient-lb-content {
+  background: var(--bg2, #1e1e2e); border-radius: 12px;
+  padding: 24px; max-width: 90vw; max-height: 90vh;
+  display: flex; flex-direction: column; gap: 16px;
+  position: relative; overflow: auto;
+}
+.orient-lb-close {
+  position: absolute; top: 8px; right: 12px;
+  background: none; border: none; color: var(--dim); font-size: 20px;
+  cursor: pointer; padding: 4px 8px; border-radius: 4px;
+}
+.orient-lb-close:hover { color: var(--fg); background: rgba(255,255,255,0.1); }
+.orient-lb-compare {
+  display: flex; align-items: center; gap: 20px; justify-content: center;
+}
+.orient-lb-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.orient-lb-img {
+  max-width: 38vw; max-height: 60vh; border-radius: 6px;
+  object-fit: contain; background: #000;
+}
+.orient-lb-arrow { font-size: 28px; color: var(--dim); flex-shrink: 0; }
+.orient-lb-info {
+  display: flex; align-items: center; gap: 16px; justify-content: center;
+  flex-wrap: wrap;
+}
+.orient-lb-filename { font-weight: 600; font-size: 14px; color: var(--fg); }
+.orient-lb-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.orient-lb-toggle {
+  padding: 8px 16px; border-radius: 6px; border: 1px solid var(--dim);
+  background: transparent; color: var(--fg); cursor: pointer; font-size: 14px;
+}
+.orient-lb-toggle.on {
+  background: rgba(34,197,94,0.15); border-color: #22c55e; color: #22c55e;
+}
+.orient-lb-nav {
+  display: flex; align-items: center; gap: 12px;
+}
+.orient-lb-nav button {
+  padding: 6px 12px; border-radius: 4px; border: 1px solid var(--dim);
+  background: transparent; color: var(--fg); cursor: pointer; font-size: 13px;
+}
+.orient-lb-nav button:disabled { opacity: 0.3; cursor: default; }
+.orient-lb-nav button:not(:disabled):hover { background: rgba(255,255,255,0.1); }
+.orient-lb-nav span { font-size: 13px; color: var(--dim); }
 .exec-pfill.scanning {
   animation: scanning-pulse 1.5s ease-in-out infinite;
   background: var(--accent);
