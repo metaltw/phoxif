@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phoxif — Reports</title>
+<style>
+:root { --fg:#1a1d21; --bg:#f7f8fa; --muted:#6a7178; --accent:#0b6e4f;
+        --soft:#eef1f4; --line:#e3e7ea; --card:#ffffff; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg:#e6e8ea; --bg:#111317; --muted:#9aa2ab; --accent:#4fc596;
+          --soft:#22272d; --line:#2e343b; --card:#1b1f24; }
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:0 0 3rem; background:var(--bg); color:var(--fg);
+  font:16px/1.7 -apple-system,"PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif; }
+main { max-width:880px; margin:0 auto; padding:0 1.2rem; }
+.hero { background:linear-gradient(135deg,var(--accent),#0a4f3a); color:#fff;
+  padding:1.6rem 1.2rem; }
+.hero .repo { opacity:.85; font-size:.9rem; letter-spacing:.06em; }
+.hero h1 { margin:.15rem 0 .2rem; font-size:1.45rem; }
+.latest { display:block; margin:1.6rem 0 0; background:var(--card);
+  border:1px solid var(--line); border-left:8px solid var(--accent);
+  border-radius:12px; padding:1rem 1.2rem; text-decoration:none; color:var(--fg); }
+.latest .k { color:var(--accent); font-weight:700; font-size:.85rem; }
+.latest .t { font-size:1.2rem; font-weight:700; margin:.15rem 0; }
+.latest .d { color:var(--muted); font-size:.92rem; }
+h2 { font-size:1.1rem; margin:2rem 0 .7rem; border-left:5px solid var(--accent);
+  padding-left:.6rem; }
+.status { background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding: .9rem 1.2rem; }
+.status ul { margin:.3rem 0; padding-left:1.2rem; }
+.status li { margin:.35rem 0; }
+table { border-collapse:collapse; width:100%; font-size:.92rem;
+  background:var(--card); border-radius:12px; overflow:hidden; }
+th { background:var(--soft); text-align:left; }
+th,td { border:1px solid var(--line); padding:.5rem .8rem; }
+td a { color:var(--accent); font-weight:600; text-decoration:none; }
+code { background:var(--soft); padding:.1rem .35rem; border-radius:4px;
+  font:.88em ui-monospace,"SF Mono",Menlo,monospace; }
+.meta { color:var(--muted); font-size:.82rem; margin-top:2.2rem;
+  border-top:1px solid var(--line); padding-top:.7rem; }
+</style></head><body>
+<div class="hero"><div class="repo">phoxif</div><h1>Reports Dashboard</h1></div>
+<main>
+<a class="latest" href="20260706-overview.html"><span class="k">▶ 最新報告</span><div class="t">phoxif — Repo 概覽</div><div class="d">導入 war_room reports/hygiene 規範時產出的第一份報告:功能、tech stack、目錄結構(全取自既有公開文件)</div></a>
+
+<h2>這個 repo 看哪裡(📌要看 📊報告 🔧AI工作區 🗄別看)</h2><div class="status"><ul><li>📊 <code>reports/</code> — 專案報告(統一入口 index.html)</li>
+<li>📌 <code>docs/</code> — 設計文件/workflow 說明(要看)</li>
+<li>🔧 <code>phoxif/</code> — 套件原始碼(AI 工作區)</li>
+<li>🔧 <code>frontend/</code> — Web UI 原始碼(AI 工作區)</li>
+<li>🔧 <code>assets/</code> — App 圖示等靜態資源(AI 工作區)</li></ul></div>
+<h2>全部報告</h2>
+<table><tr><th>日期</th><th>報告</th><th>一句話</th></tr>
+<tr><td>20260706</td><td><a href="20260706-overview.html">phoxif — Repo 概覽</a></td><td>導入 war_room reports/hygiene 規範時產出的第一份報告:功能、tech stack、目錄結構(全取自既有公開文件)</td></tr>
+</table>
+<div class="meta">由 war_room/tools/build_report_index.py 產生 · 2026-07-06 17:33 · 來源:reports/INDEX.md + CLAUDE.md;手改本檔無效,改來源後重跑產生器</div>
+</main></body></html>
