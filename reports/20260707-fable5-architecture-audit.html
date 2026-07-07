@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phoxif 架構診斷書(Fable 5 開釋 Session)</title>
+<style>
+:root { --fg:#1a1d21; --bg:#ffffff; --muted:#6a7178; --accent:#0b6e4f;
+        --soft:#f4f6f8; --line:#e3e7ea; --warn:#b3261e; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg:#e6e8ea; --bg:#16181c; --muted:#9aa2ab; --accent:#4fc596;
+          --soft:#1f2329; --line:#2e343b; --warn:#ff6b5e; }
+}
+* { box-sizing: border-box; }
+body { margin:0; padding:2.2rem 1.4rem 4rem; background:var(--bg); color:var(--fg);
+  font: 16px/1.75 -apple-system, "PingFang TC", "Noto Sans TC", "Helvetica Neue", sans-serif; }
+main { max-width: 860px; margin: 0 auto; }
+h1 { font-size:1.7rem; border-bottom:3px solid var(--accent); padding-bottom:.4rem; }
+h2 { font-size:1.25rem; margin-top:2.2rem; border-left:5px solid var(--accent);
+     padding-left:.6rem; }
+h3 { font-size:1.05rem; color:var(--accent); }
+a { color: var(--accent); }
+table { border-collapse: collapse; width:100%; margin:1rem 0; font-size:.92rem;
+        display:block; overflow-x:auto; }
+th { background:var(--soft); text-align:left; }
+th, td { border:1px solid var(--line); padding:.45rem .7rem; vertical-align:top; }
+code { background:var(--soft); padding:.12rem .35rem; border-radius:4px;
+       font: .88em ui-monospace, "SF Mono", Menlo, monospace; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:8px;
+      padding:.9rem 1rem; overflow-x:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:.8rem 0; padding:.2rem 1rem; border-left:4px solid var(--muted);
+             color:var(--muted); }
+hr { border:none; border-top:1px solid var(--line); margin:2rem 0; }
+strong { color: var(--accent); }
+.report-meta { color:var(--muted); font-size:.85rem; margin-top:3rem;
+               border-top:1px solid var(--line); padding-top:.8rem; }
+</style></head>
+<body><main><h1 id="phoxif-fable-5-session">phoxif 架構診斷書(Fable 5 開釋 Session)</h1>
+<p>日期:2026-07-07。依據:全 repo 偵察(HEAD <code>e179729</code>,main,clean tree)+ Metal 訪談。
+本報告是一次性診斷;長期有效的決策已轉寫為 <code>docs/adr/</code>,行動項在 <code>TODO.md</code>,
+驗證方法在 <code>docs/quality.md</code>,路線在 <code>docs/roadmap.md</code>。</p>
+<h2 id="tldr">TL;DR</h2>
+<ol>
+<li>專案的核心價值鏈(跨電腦收集 → 去重 → 補 metadata → 歸檔 NAS/Immich)<strong>沒有脊椎</strong>:
+   缺一個跨批次的 catalog,現有工具都是「單資料夾、單次執行」思維。</li>
+<li>安全規則「紙上嚴格、程式碼違規」:design.md 的硬規則被自己的程式碼違反
+   (<code>-overwrite_original</code> api 4 處/全 repo 8 處、<code>convert.py</code> 無條件刪原始影片)。</li>
+<li>零測試。任何重構都沒有安全網(本 session 已 bootstrap <code>tests/</code>)。</li>
+</ol>
+<hr>
+<h2 id="_1">一、最大的三個架構風險</h2>
+<h3 id="1-vs">風險 1:單資料夾工具 vs 批次管線的錯位(嚴重度:最高)</h3>
+<p><strong>現況</strong>:GUI 是「開一個資料夾 → scan → review → execute」的工具型 app;
+狀態只活在單次 scan 的記憶體與該資料夾的 <code>.phoxif_log.json</code>。
+但使用者的實際問題是<strong>跨多台電腦、多個資料夾</strong>的收集與去重——
+這需要跨批次、跨機器的持久狀態。</p>
+<p><strong>判準(什麼時候你會撞牆)</strong>:當你要回答「這張照片在別台電腦出現過嗎?」
+「這批檔案上次處理到哪?」「這個估計日期是哪個 heuristic 寫的、原值是什麼?」
+——現有架構全部答不出來。</p>
+<p><strong>修法</strong>:建 SQLite catalog 作為管線脊椎(見 ADR-0002),
+管線分五階段且順序固定(見 ADR-0001)。GUI 保留,改為駕駛艙,不再是狀態容器。</p>
+<h3 id="2">風險 2:安全規則與程式碼互相矛盾,違規會繁殖(嚴重度:高)</h3>
+<p><strong>現況</strong>(全部經 code 驗證):
+- design.md:19-23 明令 <code>exiftool -overwrite_original</code> NEVER used;
+  但 <code>phoxif/api/actions.py:190,261,308,329</code> 有 4 處直接使用
+  (legacy CLI 另有 4 處,全 repo 基線共 8,分層處置見 quality.md G1)。
+- design.md 明令影片原檔 NEVER auto-deleted;但 <code>phoxif/convert.py:167</code>
+  轉檔後<strong>無條件 <code>src.unlink()</code> 永久刪除原始影片</strong>,無回收桶、無驗證閘。
+- <code>phoxif/sorter.py:401</code> 的網頁 Del 按鈕是永久刪除,無 trash、無 log。
+- <code>phoxif/api/actions.py:300-303</code>(<code>_rotate_pillow</code>)原地覆寫原檔,
+  無 temp+atomic replace,寫到一半失敗會毀檔。</p>
+<p><strong>為什麼這比單純的 bug 危險</strong>:AI 開發者遇到「文件說 A、程式碼做 B」時,
+多數會模仿既有程式碼(B),於是違規模式繁殖。文件的硬規則形同虛設。</p>
+<p><strong>判準(機器可查)</strong>:
+<code>grep -rn 'overwrite_original' phoxif/</code> 非零、
+<code>grep -rn '\.unlink()' phoxif/</code> 命中使用者檔案路徑 = 規則仍在被違反。</p>
+<p><strong>修法</strong>:所有 EXIF 寫入收斂到單一 choke point 模組(見 ADR-0006),
+搭配 grep 閘門(<code>docs/quality.md</code>);P0 修復清單見 <code>TODO.md</code>。
+design.md 的規則措辭需同步精緻化(「禁止對使用者原檔 in-place 寫入」,
+而非一刀切禁 flag)——屬「先說再改」層級,已列 TODO 待 Metal 核准。</p>
+<h3 id="3">風險 3:零測試 + 外部工具行為假設散落各處(嚴重度:高)</h3>
+<p><strong>現況</strong>:全 repo 無任何測試(pytest 連依賴都不是);對 exiftool/ffmpeg 的
+行為假設(輸出格式、tag 名、錯誤模式)散落在 5+ 個模組,無錯誤處理的
+<code>subprocess.run</code> 在 legacy 腳本裡裸奔(write_gps.py:37、organize.py:113、convert.py:30)。</p>
+<p><strong>判準</strong>:改 <code>scanner.py</code> 或 <code>classifier.py</code> 的任何一行,沒有機器訊號告訴你
+有沒有弄壞別的東西。</p>
+<p><strong>修法</strong>:本 session 已建 <code>tests/</code> 骨架(conftest fixture factory + seed tests,
+見 <code>docs/quality.md</code>)。之後的紀律:改 heuristic 先加 case(先紅後綠)。</p>
+<hr>
+<h2 id="ai">二、最容易讓 AI 開發者走偏的四個地方</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>偏航</th>
+<th>為什麼會偏</th>
+<th>正確方向(判準)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>先做日期補齊、後做去重</strong></td>
+<td>「WeChat/LINE 補日期」是明星功能,直覺先做</td>
+<td>近重複組是 metadata 恢復通道:WeChat 轉存檔常是「別處存在的原檔」的壓縮版,先去重就不用估日期。順序鐵律見 ADR-0001</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>把估計日期直接寫入、不留標記</strong></td>
+<td>「反正 Metal 說盡量填」</td>
+<td>估計值必須可逆、可審計:XMP keyword 標記 + catalog 記原值,見 ADR-0004。不標記 = 不可逆污染</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>信任跨機器複製後的 mtime</strong></td>
+<td>mtime 看起來就是個日期</td>
+<td>檔案一經複製/下載,mtime 證據可能已毀。只有 ingest 當下從來源機器記錄的 mtime 才可用(且是最低信心來源),見 ADR-0004</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>對轉存檔做時間鄰近 GPS 推斷</strong></td>
+<td>「這張前後的照片都在東京,它應該也是」</td>
+<td>轉存檔的日期本身是估計的(收到時間≠拍攝時間),疊加推斷=誤差相乘。GPS 極性是保守:錯的 GPS 比沒有更糟,見 ADR-0005</td>
+</tr>
+</tbody>
+</table>
+<h2 id="p0-todomd">三、最值得先還的三筆技術債(P0,詳見 TODO.md)</h2>
+<ol>
+<li><strong><code>convert.py:167</code> 無條件刪原始影片</strong> — 全 repo 最危險的一行。
+   改 send2trash + 轉檔驗證閘(時長/串流數比對通過才進垃圾桶)。</li>
+<li><strong>EXIF 寫入安全收斂</strong>(actions.py 4 處 + <code>_rotate_pillow</code> 原地覆寫)
+   — 建 <code>exif_writer</code> choke point,一次修完。</li>
+<li><strong>依賴誠實化</strong> — <code>onnxruntime</code>/<code>huggingface_hub</code> 被 import 卻未宣告
+   (orientation_ai.py:52-53),靠 broad except 靜默降級,會遮真 bug;
+   dead 的 <code>ai</code> optional-dependency group;<code>/opt/homebrew/bin/jpegtran</code> 硬編碼。</li>
+</ol>
+<h2 id="_2">四、既有資產盤點(別重造的輪子)</h2>
+<ul>
+<li><strong>Immich 已在生產環境以 External Library 模式運作</strong>:私有維運 repo
+  (war_room)已有對應的 external library trash 清理工具(immich_cleaner)。
+  ADR-0003 據此定案 external library 路線,phoxif 不做 API 上傳。</li>
+<li>分類器已有 WeChat/LINE/WhatsApp/Telegram 檔名 pattern(classifier.py:76-94),
+  日期補齊的 heuristic 可直接沿用這些 regex,不要另寫一套。</li>
+<li><code>similar.py</code> 已有 perceptual hash 分組——近重複去重的核心演算法已存在,
+  缺的是跨批次的持久化與「哪份贏」的決策規則(ADR 已定)。</li>
+</ul>
+<h2 id="session">五、本次 session 交付物索引</h2>
+<table>
+<thead>
+<tr>
+<th>檔案</th>
+<th>內容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>docs/adr/0001..0007</code></td>
+<td>七項架構決策(管線順序、catalog、Immich、日期/GPS 極性、EXIF 安全、legacy 處置)</td>
+</tr>
+<tr>
+<td><code>docs/roadmap.md</code></td>
+<td>分階段路線圖(對齊 Metal 優先序:收集去重 → 日期補齊)</td>
+</tr>
+<tr>
+<td><code>docs/quality.md</code></td>
+<td>機器驗證訊號、工作迴圈落地、DoD、grep 閘門</td>
+</tr>
+<tr>
+<td><code>TODO.md</code></td>
+<td>弱模型待辦清單(含驗收條件與建議模型)</td>
+</tr>
+<tr>
+<td><code>tests/</code></td>
+<td>pytest 骨架 + seed tests</td>
+</tr>
+<tr>
+<td><code>CLAUDE.md</code></td>
+<td>重寫為 ≤150 行路由</td>
+</tr>
+<tr>
+<td><code>.claude/rules/fable5-handoff.md</code></td>
+<td>給未來 session 的交接信</td>
+</tr>
+</tbody>
+</table>
+<div class="report-meta">Generated by war_room/tools/md2report.py · 2026-07-07 14:28 · self-contained HTML(repo-reports standard)</div>
+</main></body></html>
