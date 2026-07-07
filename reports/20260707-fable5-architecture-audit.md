@@ -1,6 +1,7 @@
-# phoxif 架構診斷書(Fable 5 開釋 Session)
+# phoxif 架構診斷與行動計畫(Fable 5 開釋)
 
 日期:2026-07-07。依據:全 repo 偵察(HEAD `e179729`,main,clean tree)+ Metal 訪談。
+(同名 `.html` 為手寫圖解版,請勿用 md2report.py 覆蓋;本 md 是來源稿。)
 本報告是一次性診斷;長期有效的決策已轉寫為 `docs/adr/`,行動項在 `TODO.md`,
 驗證方法在 `docs/quality.md`,路線在 `docs/roadmap.md`。
 
@@ -97,7 +98,21 @@ design.md 的規則措辭需同步精緻化(「禁止對使用者原檔 in-place
 - `similar.py` 已有 perceptual hash 分組——近重複去重的核心演算法已存在,
   缺的是跨批次的持久化與「哪份贏」的決策規則(ADR 已定)。
 
-## 五、本次 session 交付物索引
+## 五、行動計畫摘要(正本 `docs/roadmap.md`)
+
+| Phase | 內容 | 規模 | 自主性 |
+|---|---|---|---|
+| P0 | 安全止血(convert.py 刪片閘、sorter trash、exif_writer、actions 收斂) | S | 自主 |
+| P1 | SQLite catalog + Ingest 收集器(保全證據、冪等) | M | schema 需審核 |
+| P2 | 跨機器去重(sha256 → phash,「哪份贏」規則) | M | 首批 dry-run 抽查 |
+| P3 | Enrich:日期信心階梯 → GPS 保守補齊 | M | 自主+首批抽查 |
+| P4 | Archive NAS 樹 + Immich external library scan | S-M | NAS 寫入必問 |
+| P5 | GUI 駕駛艙化(管線裝進五步流程) | M-L | UX 需審核 |
+
+安全基線收斂:`-overwrite_original` 8(現在)→ 4(P0-4 後,剩 legacy)→ 0
+(Phase 3 吸收後),G1b 閘門每輪盤點只准變少。
+
+## 六、本次 session 交付物索引
 
 | 檔案 | 內容 |
 |---|---|
