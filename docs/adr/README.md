@@ -13,6 +13,7 @@
 | [0005](0005-gps-backfill-conservative.md) | GPS 補齊:保守極性,寧缺勿錯 | Accepted |
 | [0006](0006-exif-write-safety.md) | EXIF 寫入單一 choke point + grep 閘門 | Accepted |
 | [0007](0007-legacy-cli-disposition.md) | 四支 legacy CLI 的處置(凍結/修復/吸收) | Accepted |
+| [0008](0008-dual-mode-automation-policy.md) | 雙模式(救援+進水口)與自動化政策 | Accepted |
 
 ## 格式
 

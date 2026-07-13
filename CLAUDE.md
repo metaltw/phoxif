@@ -19,6 +19,7 @@ Immich(external library)索引。GUI-first 工具型 app(open→process→close)
 | 情況 | 讀這個 |
 |---|---|
 | 任何架構/管線/heuristic 相關工作 | `docs/adr/README.md`(Accepted ADR 是約束,不重新評估) |
+| 實作管線模組(schema/介面/閥值/政策矩陣) | `docs/pipeline-design.md`(詳細設計正本) |
 | 要做新功能、排優先序 | `docs/roadmap.md` |
 | 驗收、測試指令、DoD、紅線 | `docs/quality.md` |
 | 修 bug / 衛生工作 | `TODO.md`(含驗收條件與派工建議) |
@@ -48,12 +49,16 @@ Immich(external library)索引。GUI-first 工具型 app(open→process→close)
 - 前端建置:`cd frontend && npm run build`
 - Legacy CLI(凍結中,見 ADR-0007):`python -m phoxif.<module> --config config.yaml`
 
-## Current State(2026-07-07)
+## Current State(2026-07-14)
 
 - **已完成**:GUI 五步流程(scan/dup/similar/rename/orientation/non-photos
   /date-mismatch + undo);ONNX 方向偵測;pytest 骨架(22 tests)
-- **已定案**:七份 ADR(管線順序/catalog/Immich external library/日期/GPS
-  極性/EXIF 安全/legacy 處置)
-- **下一步**:Phase 0 安全止血(TODO.md P0-1~P0-4)→ Phase 1 Catalog+Ingest
+- **已定案**:八份 ADR + **詳細設計正本 `docs/pipeline-design.md`**
+  (雙模式、catalog DDL、連拍判別、政策矩陣;實證依據
+  reports/20260714-pipeline-design-evidence)
+- **下一步**:Phase 0 安全止血(TODO.md P0-1~P0-4)→ Phase 1
+  Catalog+Census+Ingest(照 pipeline-design.md §3/§5 實作)
 - **已知問題**:`-overwrite_original` 基線 8 處(api 4 + legacy 4,見
   quality.md G1)、main.py 2 個 F401、無 CI——都在 TODO.md
+- **待 Metal 拍板**:歸檔樹佈局/staging 位置/intake 清單
+  (pipeline-design.md §13,不阻塞 P0/P1)

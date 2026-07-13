@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phoxif 管線設計實證報告(2026-07-14)</title>
+<style>
+:root { --fg:#1a1d21; --bg:#ffffff; --muted:#6a7178; --accent:#0b6e4f;
+        --soft:#f4f6f8; --line:#e3e7ea; --warn:#b3261e; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg:#e6e8ea; --bg:#16181c; --muted:#9aa2ab; --accent:#4fc596;
+          --soft:#1f2329; --line:#2e343b; --warn:#ff6b5e; }
+}
+* { box-sizing: border-box; }
+body { margin:0; padding:2.2rem 1.4rem 4rem; background:var(--bg); color:var(--fg);
+  font: 16px/1.75 -apple-system, "PingFang TC", "Noto Sans TC", "Helvetica Neue", sans-serif; }
+main { max-width: 860px; margin: 0 auto; }
+h1 { font-size:1.7rem; border-bottom:3px solid var(--accent); padding-bottom:.4rem; }
+h2 { font-size:1.25rem; margin-top:2.2rem; border-left:5px solid var(--accent);
+     padding-left:.6rem; }
+h3 { font-size:1.05rem; color:var(--accent); }
+a { color: var(--accent); }
+table { border-collapse: collapse; width:100%; margin:1rem 0; font-size:.92rem;
+        display:block; overflow-x:auto; }
+th { background:var(--soft); text-align:left; }
+th, td { border:1px solid var(--line); padding:.45rem .7rem; vertical-align:top; }
+code { background:var(--soft); padding:.12rem .35rem; border-radius:4px;
+       font: .88em ui-monospace, "SF Mono", Menlo, monospace; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:8px;
+      padding:.9rem 1rem; overflow-x:auto; }
+pre code { background:none; padding:0; }
+blockquote { margin:.8rem 0; padding:.2rem 1rem; border-left:4px solid var(--muted);
+             color:var(--muted); }
+hr { border:none; border-top:1px solid var(--line); margin:2rem 0; }
+strong { color: var(--accent); }
+.report-meta { color:var(--muted); font-size:.85rem; margin-top:3rem;
+               border-top:1px solid var(--line); padding-top:.8rem; }
+</style></head>
+<body><main><h1 id="phoxif-2026-07-14">phoxif 管線設計實證報告(2026-07-14)</h1>
+<p>配合 <code>docs/pipeline-design.md</code>(詳細設計正本)與 ADR-0008 的證據基礎。
+資料:對本機已整理工作區的<strong>只讀</strong>普查(n=1117 媒體檔;零寫入,
+以 <code>find -newer</code> 錨點檔證明)。原始統計留在 session scratchpad,
+本報告只含聚合數字。</p>
+<h2 id="tldr">TL;DR</h2>
+<ol>
+<li>實證推翻了兩個設計預設:<strong>near-dup 自動判重會誤殺連拍</strong>(已改:
+   連拍判別 + 不對稱證據門檻);<strong>影片日期欄位是 CreateDate 不是
+   DateTimeOriginal</strong>(MP4 的 DTO 存在率僅 0.1%)。</li>
+<li>mtime 比防禦性假設可靠(≤1min 一致率 97.5–99.6%)——第 6 級
+   fallback 啟用,但逐來源用普查重新評估。</li>
+<li>WeChat/LINE 檔名格式假設<strong>本機無樣本可驗</strong>(mmexport/wx_camera/LINE
+   全部 0 檔)——維持「每來源普查先行」的設計,解析器逐來源啟用。</li>
+</ol>
+<h2 id="corpus-n1117">一、Corpus 概況(n=1117)</h2>
+<table>
+<thead>
+<tr>
+<th>維度</th>
+<th>數字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>型別</td>
+<td>MP4 89.4%、JPEG 9.2%、HEIC 1.3%</td>
+</tr>
+<tr>
+<td>頂層資料夾</td>
+<td>58 夾;每夾 min 1 / median 6 / max 257</td>
+</tr>
+<tr>
+<td>檔名</td>
+<td>100% 符合 <code>YYYYMMDD_HHMMSS(_N)</code> (既有 rename 流程的產出側)</td>
+</tr>
+<tr>
+<td>影片 codec</td>
+<td>100% HEVC(既有 convert 流程已跑完)</td>
+</tr>
+<tr>
+<td>GPS</td>
+<td>100%(既有 write_gps 已跑完)</td>
+</tr>
+</tbody>
+</table>
+<p>註:這是既有手動工作流的<strong>產出側</strong>樣本——檔名/GPS/HEVC 數字代表
+「處理完會長什麼樣」,不代表雜亂輸入側;輸入側(其他機器上的
+WeChat/LINE 檔)仍待逐來源普查。</p>
+<h2 id="exif-1">二、EXIF 欄位覆蓋率 → 設計修正 1</h2>
+<table>
+<thead>
+<tr>
+<th>型別</th>
+<th>n</th>
+<th>DateTimeOriginal</th>
+<th>CreateDate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MP4</td>
+<td>999</td>
+<td>0.1%</td>
+<td>100.0%</td>
+</tr>
+<tr>
+<td>JPEG</td>
+<td>103</td>
+<td>99.0%</td>
+<td>99.0%</td>
+</tr>
+<tr>
+<td>HEIC</td>
+<td>15</td>
+<td>100.0%</td>
+<td>100.0%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正</strong>:日期階梯第 1 級按媒體型別選欄位——影像 DTO-first、
+影片 QuickTime:CreateDate(UTC,需 <code>-api QuickTimeUTC=1</code>)。
+影像思維的 DTO-first 設計會漏掉本 corpus 九成檔案。
+(pipeline-design.md §7 已更新)</p>
+<h2 id="near-dup-2">三、near-dup 距離分布 → 設計修正 2(最重要)</h2>
+<p>phash 全量比對(n=118 影像,6903 對):</p>
+<table>
+<thead>
+<tr>
+<th>Hamming 距離</th>
+<th>配對數</th>
+<th>主要成因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≤ 4</td>
+<td>112</td>
+<td><strong>絕大多數是連拍/同景連按</strong>(<code>_N</code> 尾碼叢集)</td>
+</tr>
+<tr>
+<td>5–8</td>
+<td>200</td>
+<td>同景變化</td>
+</tr>
+<tr>
+<td>9–12</td>
+<td>246</td>
+<td>弱相似</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正</strong>:原設計「d≤4 自動判重」會把連拍當重複刪掉。新規則
+(pipeline-design.md §6):先過連拍判別(同來源同夾、雙方原生 EXIF、
+時間差 ≤10s → burst,雙留);自動判重另需<strong>不對稱證據</strong>(一方無原生
+EXIF 或明顯再壓縮);對稱配對即使 d=0 也進人工佇列。</p>
+<p>exact dup:1117 檔中僅 1 組(2 檔)——已整理區如預期乾淨。</p>
+<h2 id="mtime-6-fallback">四、mtime 可信度 → 第 6 級 fallback 校準</h2>
+<table>
+<thead>
+<tr>
+<th>比對</th>
+<th>n</th>
+<th>≤1min</th>
+<th>&gt;30day</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DTO vs FileModifyDate(影像)</td>
+<td>118</td>
+<td>97.5%</td>
+<td>1.7%</td>
+</tr>
+<tr>
+<td>CreateDate vs FileModifyDate(全型別)</td>
+<td>1116</td>
+<td>99.6%</td>
+<td>0.4%</td>
+</tr>
+</tbody>
+</table>
+<p>啟用第 6 級(mtime fallback,最低信心、必標記);但此數字來自
+本機管理的 corpus,<strong>每個新來源以自己的普查數字重新評估</strong>。</p>
+<h2 id="_1">五、仍未驗證(誠實清單)</h2>
+<table>
+<thead>
+<tr>
+<th>假設</th>
+<th>狀態</th>
+<th>驗證計畫</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>mmexport 13 位 ms epoch 格式</td>
+<td>本機 0 樣本,無法驗</td>
+<td>每來源普查(census)先行;Phase 3 接第一個含 WeChat 檔的來源時實證</td>
+</tr>
+<tr>
+<td>LINE 檔名格式</td>
+<td>同上</td>
+<td>同上;解析器表<strong>不預先加 LINE 列</strong>,普查實證後才加</td>
+</tr>
+<tr>
+<td>Immich 對 IPTC/XMP keywords 的索引</td>
+<td>未實測</td>
+<td>Phase 3 驗收項(一張測試照進 Immich 搜標記)</td>
+</tr>
+<tr>
+<td>影片(MOV/MP4)keyword 寫入被 Immich 讀取</td>
+<td>未實測</td>
+<td>同上,影像/影片各測一張</td>
+</tr>
+</tbody>
+</table>
+<h2 id="_2">六、本次設計交付物</h2>
+<table>
+<thead>
+<tr>
+<th>檔案</th>
+<th>內容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>docs/pipeline-design.md</code></td>
+<td>詳細設計正本:雙模式、catalog DDL、模組介面、連拍判別、政策矩陣、效能驗算、Live Photo/編輯變體等領域地雷</td>
+</tr>
+<tr>
+<td><code>docs/adr/0008-dual-mode-automation-policy.md</code></td>
+<td>新決策:救援+進水口雙模式、自動化粒度</td>
+</tr>
+<tr>
+<td><code>docs/roadmap.md</code></td>
+<td>Phase 1/2 依設計校準(census 併入 Phase 1)</td>
+</tr>
+<tr>
+<td>本報告</td>
+<td>設計的證據基礎</td>
+</tr>
+</tbody>
+</table>
+<h2 id="metal-p0p1-pipeline-designmd-13">七、待 Metal 拍板(不阻塞 P0/P1,詳 pipeline-design.md §13)</h2>
+<ol>
+<li>歸檔樹維持日期佈局(建議)vs 位置佈局——你現行習慣是位置資料夾,
+   建議位置資訊改由 GPS + 可選 keyword 承載,樹用日期(穩定、免碰撞、
+   跨系統 ASCII 安全)。</li>
+<li>staging 放本機或外接 SSD(config 化,建議外接)。</li>
+<li>inbox intake 資料夾清單(Phase 1 實作時定)。</li>
+</ol>
+<div class="report-meta">Generated by war_room/tools/md2report.py · 2026-07-14 06:38 · self-contained HTML(repo-reports standard)</div>
+</main></body></html>

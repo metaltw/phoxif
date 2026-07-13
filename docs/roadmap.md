@@ -1,7 +1,8 @@
-# phoxif Roadmap(2026-07-07 定版)
+# phoxif Roadmap(2026-07-07 定版;2026-07-14 依詳細設計校準)
 
 排序依 Metal 訪談:①跨電腦收集與去重 ②WeChat/LINE 日期/GPS 補齊。
-管線順序與各項決策見 `docs/adr/`(Accepted ADR 是約束)。
+管線順序與各項決策見 `docs/adr/`(Accepted ADR 是約束);
+**實作規格見 `docs/pipeline-design.md`**(DDL、介面簽名、政策矩陣、閥值)。
 每階段交付「後端模組 + 測試」先行,GUI 接線隨後;驗收指令見 `docs/quality.md`。
 
 規模:S ≈ 單 session 可完;M ≈ 2-3 sessions;L ≈ 需拆子計畫。
@@ -23,17 +24,20 @@
 **最容易做錯的一步**:改 `_rotate_pillow` 時忘了 rotate 後 EXIF Orientation
 要重設(現行 actions.py:308 有做)——重構時保留該行為並寫測試鎖住。
 
-## Phase 1:Catalog + Ingest(規模 M,schema 需審核,其餘自主)
+## Phase 1:Catalog + Census + Ingest(規模 M,schema 已定於設計文件,實作自主)
 
-**目標**:`phoxif/catalog.py`(SQLite,ADR-0002 schema + migration)+
-Ingest 收集器:掃來源根目錄 → sha256/phash → 記錄證據(來源機器、原始
-路徑、mtime)→ 入庫。CLI 先行(`python -m phoxif.ingest --source <label> <dir>`)。
+**目標**:`pipeline/catalog.py`(DDL 照 pipeline-design.md §3,migration 0001)+
+`pipeline/census.py`(來源普查,零寫入)+ `pipeline/ingest.py`
+(雙模式 rescue/inbox,ADR-0008;證據入庫 + staging 複製)。
+CLI 先行(`python -m phoxif.pipeline.ingest --source <id> <dir>`)。
 
 **驗收**:
 - 全新 db 上 ingest 兩個模擬來源資料夾(tmp fixture),sightings 正確合併同 hash。
-- 重跑同來源 = 冪等(不重複入庫),有測試。
+- 重跑同來源 = 冪等(不重複入庫),有測試;重逢規則(已 archived 的 sha256
+  再現 → 自動標 duplicate)有測試。
 - mtime 在複製進工作區後與 catalog 記錄一致(證據保全),有測試。
 - schema migration 機制有測試(user_version 升級路徑)。
+- census 對 fixture 來源產出 pattern/EXIF 覆蓋率報告,且全程零寫入(有測試)。
 
 **最容易做錯的一步**:把 ingest 寫成「移動檔案」——Phase 1 的 ingest
 **只讀不動**(登記 + 可選複製到工作區),原始檔留在原地,搬移是
@@ -42,10 +46,11 @@ Archive 階段的事。動了就毀證據。
 ## Phase 2:跨機器 Dedupe(規模 M,「哪份贏」規則首批結果需審核)
 
 **目標**:catalog 內 exact dup(同 sha256 多 sightings)與 near-dup
-(phash 距離 ≤ 門檻,沿用 similar.py 演算法)分組;
-「哪份贏」規則:EXIF 完整度 > 解析度/檔案大小 > 相機命名(IMG_/DSC)
-勝過轉存命名(mmexport/LINE);輸家標 `duplicate` + `kept_sha256`。
-GUI:dup group review 畫面沿用既有 DuplicateGroup/SimilarDetail 元件擴充。
+(phash 距離分帶:≤4 自動、4<d≤10 人工佇列,pipeline-design.md §6)分組;
+「哪份贏」= 確定性 tuple 排序(原生 EXIF 日期 > GPS > 像素 > 相機命名 >
+大小 > 最早目擊);輸家標 `duplicate` + `kept_sha256`,刪除走批次一鍵批准
+(ADR-0008 政策矩陣)。GUI:沿用 DuplicateGroup/SimilarDetail 擴充 +
+新增 TrashApproval 畫面。
 
 **驗收**:
 - 規則單元測試:原檔 vs WeChat 壓縮版 → 原檔贏,理由欄位可讀。
