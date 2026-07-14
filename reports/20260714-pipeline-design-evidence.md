@@ -1,5 +1,6 @@
-# phoxif 管線設計實證報告(2026-07-14)
+# phoxif 管線設計與實證報告(2026-07-14)
 
+(同名 `.html` 為手寫圖解版,請勿用 md2report.py 覆蓋;本 md 是來源稿。)
 配合 `docs/pipeline-design.md`(詳細設計正本)與 ADR-0008 的證據基礎。
 資料:對本機已整理工作區的**只讀**普查(n=1117 媒體檔;零寫入,
 以 `find -newer` 錨點檔證明)。原始統計留在 session scratchpad,

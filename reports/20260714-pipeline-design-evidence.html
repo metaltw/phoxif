@@ -1,249 +1,304 @@
 <!DOCTYPE html>
-<html lang="zh-Hant"><head><meta charset="utf-8">
+<!-- hand-authored 圖解版;請勿用 md2report.py 覆蓋(同名 .md 為來源稿)-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>phoxif 管線設計實證報告(2026-07-14)</title>
+<title>phoxif 管線設計與實證報告(2026-07-14)</title>
 <style>
-:root { --fg:#1a1d21; --bg:#ffffff; --muted:#6a7178; --accent:#0b6e4f;
-        --soft:#f4f6f8; --line:#e3e7ea; --warn:#b3261e; }
-@media (prefers-color-scheme: dark) {
-  :root { --fg:#e6e8ea; --bg:#16181c; --muted:#9aa2ab; --accent:#4fc596;
-          --soft:#1f2329; --line:#2e343b; --warn:#ff6b5e; }
-}
-* { box-sizing: border-box; }
-body { margin:0; padding:2.2rem 1.4rem 4rem; background:var(--bg); color:var(--fg);
-  font: 16px/1.75 -apple-system, "PingFang TC", "Noto Sans TC", "Helvetica Neue", sans-serif; }
-main { max-width: 860px; margin: 0 auto; }
-h1 { font-size:1.7rem; border-bottom:3px solid var(--accent); padding-bottom:.4rem; }
-h2 { font-size:1.25rem; margin-top:2.2rem; border-left:5px solid var(--accent);
-     padding-left:.6rem; }
-h3 { font-size:1.05rem; color:var(--accent); }
-a { color: var(--accent); }
-table { border-collapse: collapse; width:100%; margin:1rem 0; font-size:.92rem;
-        display:block; overflow-x:auto; }
-th { background:var(--soft); text-align:left; }
-th, td { border:1px solid var(--line); padding:.45rem .7rem; vertical-align:top; }
-code { background:var(--soft); padding:.12rem .35rem; border-radius:4px;
-       font: .88em ui-monospace, "SF Mono", Menlo, monospace; }
-pre { background:var(--soft); border:1px solid var(--line); border-radius:8px;
-      padding:.9rem 1rem; overflow-x:auto; }
-pre code { background:none; padding:0; }
-blockquote { margin:.8rem 0; padding:.2rem 1rem; border-left:4px solid var(--muted);
-             color:var(--muted); }
-hr { border:none; border-top:1px solid var(--line); margin:2rem 0; }
-strong { color: var(--accent); }
-.report-meta { color:var(--muted); font-size:.85rem; margin-top:3rem;
-               border-top:1px solid var(--line); padding-top:.8rem; }
-</style></head>
-<body><main><h1 id="phoxif-2026-07-14">phoxif 管線設計實證報告(2026-07-14)</h1>
-<p>配合 <code>docs/pipeline-design.md</code>(詳細設計正本)與 ADR-0008 的證據基礎。
-資料:對本機已整理工作區的<strong>只讀</strong>普查(n=1117 媒體檔;零寫入,
-以 <code>find -newer</code> 錨點檔證明)。原始統計留在 session scratchpad,
-本報告只含聚合數字。</p>
-<h2 id="tldr">TL;DR</h2>
-<ol>
-<li>實證推翻了兩個設計預設:<strong>near-dup 自動判重會誤殺連拍</strong>(已改:
-   連拍判別 + 不對稱證據門檻);<strong>影片日期欄位是 CreateDate 不是
-   DateTimeOriginal</strong>(MP4 的 DTO 存在率僅 0.1%)。</li>
-<li>mtime 比防禦性假設可靠(≤1min 一致率 97.5–99.6%)——第 6 級
-   fallback 啟用,但逐來源用普查重新評估。</li>
-<li>WeChat/LINE 檔名格式假設<strong>本機無樣本可驗</strong>(mmexport/wx_camera/LINE
-   全部 0 檔)——維持「每來源普查先行」的設計,解析器逐來源啟用。</li>
-</ol>
-<h2 id="corpus-n1117">一、Corpus 概況(n=1117)</h2>
-<table>
-<thead>
-<tr>
-<th>維度</th>
-<th>數字</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>型別</td>
-<td>MP4 89.4%、JPEG 9.2%、HEIC 1.3%</td>
-</tr>
-<tr>
-<td>頂層資料夾</td>
-<td>58 夾;每夾 min 1 / median 6 / max 257</td>
-</tr>
-<tr>
-<td>檔名</td>
-<td>100% 符合 <code>YYYYMMDD_HHMMSS(_N)</code> (既有 rename 流程的產出側)</td>
-</tr>
-<tr>
-<td>影片 codec</td>
-<td>100% HEVC(既有 convert 流程已跑完)</td>
-</tr>
-<tr>
-<td>GPS</td>
-<td>100%(既有 write_gps 已跑完)</td>
-</tr>
-</tbody>
-</table>
-<p>註:這是既有手動工作流的<strong>產出側</strong>樣本——檔名/GPS/HEVC 數字代表
-「處理完會長什麼樣」,不代表雜亂輸入側;輸入側(其他機器上的
-WeChat/LINE 檔)仍待逐來源普查。</p>
-<h2 id="exif-1">二、EXIF 欄位覆蓋率 → 設計修正 1</h2>
-<table>
-<thead>
-<tr>
-<th>型別</th>
-<th>n</th>
-<th>DateTimeOriginal</th>
-<th>CreateDate</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>MP4</td>
-<td>999</td>
-<td>0.1%</td>
-<td>100.0%</td>
-</tr>
-<tr>
-<td>JPEG</td>
-<td>103</td>
-<td>99.0%</td>
-<td>99.0%</td>
-</tr>
-<tr>
-<td>HEIC</td>
-<td>15</td>
-<td>100.0%</td>
-<td>100.0%</td>
-</tr>
-</tbody>
-</table>
-<p><strong>修正</strong>:日期階梯第 1 級按媒體型別選欄位——影像 DTO-first、
-影片 QuickTime:CreateDate(UTC,需 <code>-api QuickTimeUTC=1</code>)。
-影像思維的 DTO-first 設計會漏掉本 corpus 九成檔案。
-(pipeline-design.md §7 已更新)</p>
-<h2 id="near-dup-2">三、near-dup 距離分布 → 設計修正 2(最重要)</h2>
-<p>phash 全量比對(n=118 影像,6903 對):</p>
-<table>
-<thead>
-<tr>
-<th>Hamming 距離</th>
-<th>配對數</th>
-<th>主要成因</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>≤ 4</td>
-<td>112</td>
-<td><strong>絕大多數是連拍/同景連按</strong>(<code>_N</code> 尾碼叢集)</td>
-</tr>
-<tr>
-<td>5–8</td>
-<td>200</td>
-<td>同景變化</td>
-</tr>
-<tr>
-<td>9–12</td>
-<td>246</td>
-<td>弱相似</td>
-</tr>
-</tbody>
-</table>
-<p><strong>修正</strong>:原設計「d≤4 自動判重」會把連拍當重複刪掉。新規則
-(pipeline-design.md §6):先過連拍判別(同來源同夾、雙方原生 EXIF、
-時間差 ≤10s → burst,雙留);自動判重另需<strong>不對稱證據</strong>(一方無原生
-EXIF 或明顯再壓縮);對稱配對即使 d=0 也進人工佇列。</p>
-<p>exact dup:1117 檔中僅 1 組(2 檔)——已整理區如預期乾淨。</p>
-<h2 id="mtime-6-fallback">四、mtime 可信度 → 第 6 級 fallback 校準</h2>
-<table>
-<thead>
-<tr>
-<th>比對</th>
-<th>n</th>
-<th>≤1min</th>
-<th>&gt;30day</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>DTO vs FileModifyDate(影像)</td>
-<td>118</td>
-<td>97.5%</td>
-<td>1.7%</td>
-</tr>
-<tr>
-<td>CreateDate vs FileModifyDate(全型別)</td>
-<td>1116</td>
-<td>99.6%</td>
-<td>0.4%</td>
-</tr>
-</tbody>
-</table>
-<p>啟用第 6 級(mtime fallback,最低信心、必標記);但此數字來自
-本機管理的 corpus,<strong>每個新來源以自己的普查數字重新評估</strong>。</p>
-<h2 id="_1">五、仍未驗證(誠實清單)</h2>
-<table>
-<thead>
-<tr>
-<th>假設</th>
-<th>狀態</th>
-<th>驗證計畫</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>mmexport 13 位 ms epoch 格式</td>
-<td>本機 0 樣本,無法驗</td>
-<td>每來源普查(census)先行;Phase 3 接第一個含 WeChat 檔的來源時實證</td>
-</tr>
-<tr>
-<td>LINE 檔名格式</td>
-<td>同上</td>
-<td>同上;解析器表<strong>不預先加 LINE 列</strong>,普查實證後才加</td>
-</tr>
-<tr>
-<td>Immich 對 IPTC/XMP keywords 的索引</td>
-<td>未實測</td>
-<td>Phase 3 驗收項(一張測試照進 Immich 搜標記)</td>
-</tr>
-<tr>
-<td>影片(MOV/MP4)keyword 寫入被 Immich 讀取</td>
-<td>未實測</td>
-<td>同上,影像/影片各測一張</td>
-</tr>
-</tbody>
-</table>
-<h2 id="_2">六、本次設計交付物</h2>
-<table>
-<thead>
-<tr>
-<th>檔案</th>
-<th>內容</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>docs/pipeline-design.md</code></td>
-<td>詳細設計正本:雙模式、catalog DDL、模組介面、連拍判別、政策矩陣、效能驗算、Live Photo/編輯變體等領域地雷</td>
-</tr>
-<tr>
-<td><code>docs/adr/0008-dual-mode-automation-policy.md</code></td>
-<td>新決策:救援+進水口雙模式、自動化粒度</td>
-</tr>
-<tr>
-<td><code>docs/roadmap.md</code></td>
-<td>Phase 1/2 依設計校準(census 併入 Phase 1)</td>
-</tr>
-<tr>
-<td>本報告</td>
-<td>設計的證據基礎</td>
-</tr>
-</tbody>
-</table>
-<h2 id="metal-p0p1-pipeline-designmd-13">七、待 Metal 拍板(不阻塞 P0/P1,詳 pipeline-design.md §13)</h2>
-<ol>
-<li>歸檔樹維持日期佈局(建議)vs 位置佈局——你現行習慣是位置資料夾,
-   建議位置資訊改由 GPS + 可選 keyword 承載,樹用日期(穩定、免碰撞、
-   跨系統 ASCII 安全)。</li>
-<li>staging 放本機或外接 SSD(config 化,建議外接)。</li>
-<li>inbox intake 資料夾清單(Phase 1 實作時定)。</li>
-</ol>
-<div class="report-meta">Generated by war_room/tools/md2report.py · 2026-07-14 06:38 · self-contained HTML(repo-reports standard)</div>
-</main></body></html>
+  :root{
+    --bg:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e;
+    --muted:#898781; --line:#e1e0d9; --border:rgba(11,11,11,.10);
+    --accent:#2a78d6; --accent-soft:#cde2fb;
+    --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --good-ink:#006300;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7;
+      --muted:#898781; --line:#2c2c2a; --border:rgba(255,255,255,.10);
+      --accent:#3987e5; --accent-soft:#104281;
+      --s1:#3987e5; --s2:#199e70; --s3:#c98500;
+      --good-ink:#0ca30c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.65 system-ui,-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto;padding:32px 20px 64px}
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+  .kicker{color:var(--accent);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+  h1{font-size:28px;line-height:1.3;margin:6px 0 8px}
+  .meta{color:var(--muted);font-size:13px}
+  h2{font-size:20px;margin:40px 0 4px;padding-top:8px}
+  h2 .no{color:var(--accent);margin-right:8px}
+  h3{font-size:15.5px;margin:18px 0 6px}
+  .lede{color:var(--ink2);margin:0 0 16px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;
+    background:var(--line);padding:1px 5px;border-radius:4px;white-space:nowrap}
+  a{color:var(--accent)}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:20px 0 4px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .tile .v{font-size:30px;font-weight:700;line-height:1.15}
+  .tile .v small{font-size:15px;font-weight:600;color:var(--ink2)}
+  .tile .k{color:var(--ink2);font-size:13px;margin-top:2px}
+  .tile .sub{color:var(--muted);font-size:12px;margin-top:4px}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:18px 20px;margin:14px 0}
+  .card h3{margin:0 0 6px}
+  .card p{margin:6px 0;color:var(--ink2)}
+  .badge{display:inline-block;font-size:12px;font-weight:700;border-radius:99px;
+    padding:1px 10px;vertical-align:2px;margin-left:8px;color:#fff}
+  .badge.crit{background:var(--crit)}
+  .badge.good{background:var(--good)}
+  .badge.plain{background:var(--line);color:var(--ink2)}
+
+  .tblwrap{overflow-x:auto;margin:14px 0}
+  table{border-collapse:collapse;width:100%;background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden;font-size:14px}
+  th,td{text-align:left;padding:9px 12px;border-top:1px solid var(--line);vertical-align:top}
+  thead th{border-top:none;color:var(--muted);font-size:12.5px;font-weight:600;letter-spacing:.03em}
+  td:first-child,th:first-child{padding-left:16px}
+  .num{font-variant-numeric:tabular-nums}
+  .okline{color:var(--good-ink);font-weight:600}
+
+  /* charts (CSS bars, direct-labeled) */
+  .chart{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:16px 18px;margin:14px 0}
+  .chart .ct{font-weight:700;font-size:14.5px;margin:0 0 2px}
+  .chart .cs{color:var(--muted);font-size:12.5px;margin:0 0 12px}
+  .brow{display:grid;grid-template-columns:120px 1fr 74px;gap:10px;align-items:center;margin:7px 0}
+  .brow .bl{color:var(--ink2);font-size:13px;text-align:right}
+  .brow .bt{height:18px;border-radius:0 4px 4px 0;min-width:2px}
+  .brow .bv{font-size:13px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+  .btrack{background:var(--bg);border-radius:0 4px 4px 0}
+  .legend{display:flex;gap:16px;margin:4px 0 10px;flex-wrap:wrap}
+  .legend .li{display:flex;align-items:center;gap:6px;color:var(--ink2);font-size:12.5px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  /* stacked single bar */
+  .stack{display:flex;height:26px;border-radius:6px;overflow:hidden;gap:2px;margin:8px 0 6px}
+  .stack div{height:100%}
+  .stacklbl{display:flex;gap:16px;flex-wrap:wrap;color:var(--ink2);font-size:12.5px}
+
+  /* before/after */
+  .flip{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+  @media (max-width:640px){.flip{grid-template-columns:1fr}}
+  .flip .b,.flip .a{border-radius:10px;padding:12px 14px;font-size:13.5px}
+  .flip .b{background:var(--bg);border:1px solid var(--border);color:var(--ink2)}
+  .flip .a{background:var(--surface);border:1.6px solid var(--good);color:var(--ink)}
+  .flip .tag{font-size:11.5px;font-weight:700;letter-spacing:.05em;display:block;margin-bottom:4px}
+  .flip .b .tag{color:var(--crit)}
+  .flip .a .tag{color:var(--good-ink)}
+
+  /* dual-mode diagram */
+  .diagram{overflow-x:auto;background:var(--surface);border:1px solid var(--border);
+    border-radius:12px;padding:18px 12px;margin:14px 0}
+  .diagram svg{display:block;min-width:840px;width:100%;height:auto}
+  .dg-box{fill:none;stroke:var(--accent);stroke-width:1.6}
+  .dg-box2{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.6}
+  .dg-side{fill:none;stroke:var(--muted);stroke-width:1.3;stroke-dasharray:5 4}
+  .dg-t{fill:var(--ink);font-weight:700;font-size:13.5px}
+  .dg-s{fill:var(--ink2);font-size:11px}
+  .dg-n{fill:var(--good-ink);font-size:11.5px;font-weight:600}
+  .dg-arrow{stroke:var(--muted);stroke-width:1.6;marker-end:url(#ah2)}
+
+  ul.tight{margin:8px 0;padding-left:22px}
+  ul.tight li{margin:4px 0}
+  .foot{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);
+    margin-top:44px;padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">深度設計 Session · 2026-07-14</div>
+  <h1>phoxif 管線詳細設計與實證報告</h1>
+  <div class="meta">
+    設計正本:<code>docs/pipeline-design.md</code> · 新決策:ADR-0008 ·
+    證據:1117 檔只讀普查(零寫入,<code>find -newer</code> 錨點證明)·
+    兩輪 fresh-context 對抗審查全數修復
+  </div>
+</header>
+
+<p class="lede"><b>一句話:</b>本次把上週的方向(ADR-0001~0007)落成可照著寫程式的
+詳細設計:雙模式管線、catalog DDL、自動化政策矩陣;並用你的真實檔案普查
+<b>推翻了兩個設計預設</b>(連拍誤殺、影片日期欄位)——設計不再建在未驗證假設上。</p>
+
+<div class="tiles">
+  <div class="tile"><div class="v num">1117</div><div class="k">實檔普查(只讀)</div><div class="sub">89% 影片、100% GPS 的已整理區</div></div>
+  <div class="tile"><div class="v num">2</div><div class="k">被實證推翻的預設</div><div class="sub">連拍≠重複、影片日期欄位</div></div>
+  <div class="tile"><div class="v num">5+1</div><div class="k">領域地雷寫進規格</div><div class="sub">Live Photo、編輯變體、mtime…</div></div>
+  <div class="tile"><div class="v num">2 <small>輪</small></div><div class="k">對抗審查</div><div class="sub">3 個 MUST-FIX 全修復+機器驗證</div></div>
+</div>
+
+<h2><span class="no">壹</span>設計總覽:雙模式,同一條管線(ADR-0008)</h2>
+<p class="lede">你拍板「救援 + 長期進水口」。設計答案:兩個入口、一條管線、
+一個永久 catalog——「這張以前處理過嗎」變成一句 SQL 查詢。</p>
+
+<div class="diagram" role="img" aria-label="雙模式管線圖:救援模式與進水口模式兩個入口,匯入同一條五階段管線與永久 catalog,終點是 NAS 與 Immich">
+<svg viewBox="0 0 880 232" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ah2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#898781"/></marker></defs>
+  <rect class="dg-side" x="8" y="14" width="176" height="60" rx="9"/>
+  <text class="dg-t" x="96" y="38" text-anchor="middle">Rescue 救援</text>
+  <text class="dg-s" x="96" y="56" text-anchor="middle">舊機器/舊硬碟 campaign</text>
+  <rect class="dg-side" x="8" y="150" width="176" height="60" rx="9"/>
+  <text class="dg-t" x="96" y="174" text-anchor="middle">Inbox 進水口</text>
+  <text class="dg-s" x="96" y="192" text-anchor="middle">新 WeChat/LINE 轉存投遞夾</text>
+  <line class="dg-arrow" x1="184" y1="44"  x2="232" y2="94"/>
+  <line class="dg-arrow" x1="184" y1="180" x2="232" y2="130"/>
+  <rect class="dg-box" x="238" y="82" width="420" height="60" rx="9"/>
+  <text class="dg-t" x="448" y="106" text-anchor="middle">Ingest → Dedupe → Enrich → Review → Archive</text>
+  <text class="dg-s" x="448" y="124" text-anchor="middle">同一條五階段管線(ADR-0001)·寫入全經 exif_writer</text>
+  <rect class="dg-box2" x="700" y="82" width="172" height="60" rx="9"/>
+  <text class="dg-t" x="786" y="106" text-anchor="middle">NAS 日期樹</text>
+  <text class="dg-s" x="786" y="124" text-anchor="middle">Immich external library</text>
+  <line class="dg-arrow" x1="658" y1="112" x2="694" y2="112"/>
+  <rect class="dg-box" x="330" y="176" width="236" height="42" rx="9"/>
+  <text class="dg-t" x="448" y="196" text-anchor="middle">Catalog(SQLite,永久)</text>
+  <text class="dg-s" x="448" y="211" text-anchor="middle">sha256 身分 · 證據 · 溯源 · 狀態機</text>
+  <line class="dg-arrow" x1="448" y1="176" x2="448" y2="146"/>
+  <text class="dg-n" x="96" y="94">▲ 原始檔不動,staging 是複本</text>
+  <text class="dg-n" x="96" y="232">▲ 重逢自動判重,一鍵批准</text>
+  <text class="dg-n" x="786" y="160" text-anchor="middle">■ 進樹唯讀</text>
+</svg>
+</div>
+
+<div class="tblwrap"><table>
+  <thead><tr><th>自動化政策(§10 矩陣摘要)</th><th>粒度</th></tr></thead>
+  <tbody>
+  <tr><td>寫入型:日期/GPS 補值(可逆:標記 + catalog 原值)</td><td class="okline">✔ 全自動,低信心附非阻塞摘要</td></tr>
+  <tr><td>刪除型:重複輸家進垃圾桶</td><td><b>批次一鍵批准</b>(不逐張)</td></tr>
+  <tr><td>連拍判別命中 / 對稱 near-dup 配對</td><td>雙留不刪 / 人工佇列</td></tr>
+  <tr><td>NAS 歸檔寫入</td><td>逐 plan 批准(動前必問)</td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="no">貳</span>實證普查:數字說話</h2>
+
+<div class="chart">
+  <p class="ct">Corpus 組成(n=1117,已整理工作區)</p>
+  <p class="cs">這是你既有工作流的「產出側」——檔名 100% 已標準化、影片 100% HEVC、GPS 100%</p>
+  <div class="stack">
+    <div style="width:89.4%;background:var(--s1)"></div>
+    <div style="width:9.2%;background:var(--s2)"></div>
+    <div style="width:1.3%;background:var(--s3)"></div>
+  </div>
+  <div class="stacklbl">
+    <span><span class="sw" style="background:var(--s1)"></span> MP4 89.4%(999)</span>
+    <span><span class="sw" style="background:var(--s2)"></span> JPEG 9.2%(103)</span>
+    <span><span class="sw" style="background:var(--s3)"></span> HEIC 1.3%(15)</span>
+  </div>
+</div>
+
+<div class="chart">
+  <p class="ct">EXIF 日期欄位存在率(%,依型別)</p>
+  <p class="cs">推翻預設之一:MP4 幾乎沒有 DateTimeOriginal——影片的日期真相在 CreateDate</p>
+  <div class="legend">
+    <span class="li"><span class="sw" style="background:var(--s1)"></span> DateTimeOriginal</span>
+    <span class="li"><span class="sw" style="background:var(--s2)"></span> CreateDate</span>
+  </div>
+  <div class="brow"><span class="bl">MP4(n=999)</span><span class="btrack"><span class="bt" style="width:0.5%;background:var(--s1);display:block"></span></span><span class="bv">0.1%</span></div>
+  <div class="brow"><span class="bl"></span><span class="btrack"><span class="bt" style="width:100%;background:var(--s2);display:block"></span></span><span class="bv">100%</span></div>
+  <div class="brow"><span class="bl">JPEG(n=103)</span><span class="btrack"><span class="bt" style="width:99%;background:var(--s1);display:block"></span></span><span class="bv">99.0%</span></div>
+  <div class="brow"><span class="bl"></span><span class="btrack"><span class="bt" style="width:99%;background:var(--s2);display:block"></span></span><span class="bv">99.0%</span></div>
+  <div class="brow"><span class="bl">HEIC(n=15)</span><span class="btrack"><span class="bt" style="width:100%;background:var(--s1);display:block"></span></span><span class="bv">100%</span></div>
+  <div class="brow"><span class="bl"></span><span class="btrack"><span class="bt" style="width:100%;background:var(--s2);display:block"></span></span><span class="bv">100%</span></div>
+</div>
+
+<div class="chart">
+  <p class="ct">near-dup 配對距離分布(n=118 影像,6903 對全比對)</p>
+  <p class="cs">推翻預設之二:距離 ≤4 的配對絕大多數是<b>連拍</b>(_N 尾碼叢集),不是該刪的重複</p>
+  <div class="brow"><span class="bl">d ≤ 4</span><span class="btrack"><span class="bt" style="width:45.5%;background:var(--s1);display:block"></span></span><span class="bv">112 對</span></div>
+  <div class="brow"><span class="bl">d 5–8</span><span class="btrack"><span class="bt" style="width:81.3%;background:var(--s1);display:block"></span></span><span class="bv">200 對</span></div>
+  <div class="brow"><span class="bl">d 9–12</span><span class="btrack"><span class="bt" style="width:100%;background:var(--s1);display:block"></span></span><span class="bv">246 對</span></div>
+  <p class="cs" style="margin-top:8px">exact dup(size→md5 全量):僅 1 組 2 檔——已整理區如預期乾淨</p>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="v num">99.6<small>%</small></div><div class="k">mtime ≤1min 一致率</div><div class="sub">CreateDate 交叉驗證,n=1116</div></div>
+  <div class="tile"><div class="v num">97.5<small>%</small></div><div class="k">mtime vs DTO(影像)</div><div class="sub">n=118;第 6 級 fallback 啟用</div></div>
+  <div class="tile"><div class="v num">0</div><div class="k">mmexport/LINE 樣本</div><div class="sub">本機無轉存檔,格式假設仍待驗</div></div>
+  <div class="tile"><div class="v num">100<small>%</small></div><div class="k">影片已 HEVC</div><div class="sub">hvc1;convert 流程產出側證據</div></div>
+</div>
+
+<h2><span class="no">參</span>兩個被推翻的設計預設(修正前 → 修正後)</h2>
+
+<div class="card">
+  <h3>① near-dup 自動判重會誤殺連拍<span class="badge crit">● 資料損失級</span></h3>
+  <div class="flip">
+    <div class="b"><span class="tag">原設計(錯)</span>
+      phash 距離 ≤4 → 自動判重、選贏家、輸家批次進垃圾桶。
+      普查證實 d≤4 的 112 對幾乎全是連拍——照做會把一串連拍刪到剩一張。</div>
+    <div class="a"><span class="tag">修正後(pipeline-design.md §6)</span>
+      先過<b>連拍判別</b>:同源同夾 + 雙方原生 EXIF + 時間差 ≤10s → burst,雙留不刪。
+      自動判重另需<b>不對稱證據</b>:一方無原生 EXIF,或 min/max 像素或檔量 ≤ 0.6
+      (轉存再壓縮特徵)。對稱配對即使 d=0 也進人工佇列。</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>② 影片日期欄位用錯,九成檔案會漏<span class="badge crit">● 覆蓋率級</span></h3>
+  <div class="flip">
+    <div class="b"><span class="tag">原設計(錯)</span>
+      影像思維的 DateTimeOriginal-first——但你的 corpus 89% 是影片,
+      MP4 的 DTO 存在率只有 0.1%。</div>
+    <div class="a"><span class="tag">修正後(§7)</span>
+      日期階梯第 1 級按媒體型別選欄位:影像 DTO > CreateDate;
+      影片 QuickTime:CreateDate(UTC,exiftool 需 <code>QuickTimeUTC=1</code>,
+      dates.py 統一轉在地時間)。實測 CreateDate 覆蓋 100%。</div>
+  </div>
+</div>
+
+<h2><span class="no">肆</span>寫進規格的領域地雷(弱模型會踩、踩了毀資料)</h2>
+<div class="tblwrap"><table>
+  <thead><tr><th>地雷</th><th>規格(pipeline-design.md §6.1 等)</th></tr></thead>
+  <tbody>
+  <tr><td><b>Live Photo 配對</b></td><td>HEIC+MOV 同 ContentIdentifier 是一體:同進退、partner 豁免 HEVC 轉檔與 near-dup;拆散 = Immich 裡變兩個資產,一票 FAIL</td></tr>
+  <tr><td><b>iOS 編輯變體</b></td><td><code>IMG_E1234</code> 是刻意保留的編輯版,near-dup 必然高相似——不判重、雙留、.AAE sidecar 跟著走</td></tr>
+  <tr><td><b>exif_writer 動了 mtime</b></td><td>temp+replace 後必須 <code>os.utime</code> 還原原 mtime(mtime 是證據,也影響 rsync 增量)</td></tr>
+  <tr><td><b>中文路徑跨系統</b></td><td>歸檔路徑全 ASCII(macOS NFD vs NAS NFC 正規化坑);中文資訊走 EXIF/keyword 在檔案內部</td></tr>
+  <tr><td><b>Catalog 單點</b></td><td>每次歸檔成功後快照 catalog 到 NAS 樹根(保留 8 份);WAL 模式、單寫者</td></tr>
+  <tr><td><b>L5 資料夾日期 regex 順序</b></td><td>最特定優先(年月日先於年月,後者是前者超集)——verifier 抓到的死碼陷阱,已修+6 案例機器驗證</td></tr>
+  </tbody>
+</table></div>
+
+<h2><span class="no">伍</span>驗證與誠實聲明</h2>
+<div class="tblwrap"><table>
+  <thead><tr><th>項目</th><th>結果</th></tr></thead>
+  <tbody>
+  <tr><td>catalog DDL</td><td class="okline">sqlite3 :memory: 實跑通過(含 FK)</td></tr>
+  <tr><td>對抗審查 round-1</td><td>FAIL:政策矩陣與 §6 矛盾(會刪連拍)等 4 項 → 全修</td></tr>
+  <tr><td>對抗審查 round-2</td><td>FAIL:L5 regex 順序死碼 → 修+機器驗證 6 案例 → <span class="okline">收斂</span></td></tr>
+  <tr><td>pytest / report_check / 個資掃描</td><td class="okline">22 passed / PASS / 乾淨(報告只含聚合數字)</td></tr>
+  <tr><td>普查零寫入</td><td class="okline"><code>find -newer</code> 錨點 = 0 檔變動</td></tr>
+  </tbody>
+</table></div>
+<p class="lede"><b>仍未驗證</b>(每項都有驗證計畫):mmexport/LINE 檔名格式(本機零樣本
+→ 設計改為「每來源普查先行、解析器實證後才啟用」);Immich 對 keywords 的
+索引行為(Phase 3 驗收項,影像/影片各實測一張)。</p>
+
+<h2><span class="no">陸</span>待你拍板(不阻塞 P0/P1)</h2>
+<ul class="tight">
+  <li><b>歸檔樹佈局</b>:建議日期樹 <code>YYYY/YYYY-MM/</code>(穩定、免碰撞、ASCII 安全),
+    你現行習慣的「位置」改由 GPS + 可選 keyword 承載;強偏好位置樹則需修 ADR-0003。</li>
+  <li><b>staging 位置</b>:建議外接 SSD(rescue 全量約 100–250GB,分批處理),config 化。</li>
+  <li><b>inbox intake 清單</b>:哪些資料夾當投遞口(如 <code>~/photo_inbox/wechat/</code>),Phase 1 實作時定。</li>
+  <li>加碼:手邊若有其他電腦的 WeChat 亂資料夾,丟一包樣本來,我先把 mmexport/LINE 解析器實證校準掉。</li>
+</ul>
+
+<div class="foot">
+  設計正本:<code>docs/pipeline-design.md</code> · 決策:<code>docs/adr/0008</code>(累計 8 份)·
+  來源稿:<code>reports/20260714-pipeline-design-evidence.md</code> ·
+  普查原始數據:session scratchpad(不入 repo)<br>
+  下一步:P0 安全止血(TODO P0-1 convert.py 刪片閘優先)→ Phase 1 照
+  <code>pipeline-design.md §3/§5</code> 實作 Catalog+Census+Ingest。
+</div>
+
+</div>
+</body>
+</html>
