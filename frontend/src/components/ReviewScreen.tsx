@@ -1,247 +1,187 @@
 import React from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue } from '../types';
-import { SummaryCard } from './SummaryCard';
+import type { Screen, ScanResult, ThumbState } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
   reviewedCategories: Set<string>;
-  skippedCategories: Set<string>;
-  onToggleSkip: (category: string) => void;
   dupStates: Map<number, ThumbState[]>;
   simStates: Map<number, ThumbState[]>;
-  orientSelected: Set<string>;
-  renameSelected: Set<string>;
-  dateSelected: Set<string>;
-  nonPhotoSelected: Set<string>;
-  aiOrientIssues: OrientationIssue[];
   onNavigate: (screen: Screen) => void;
   formatSize: (bytes: number) => string;
+}
+
+interface SelectionSummary {
+  count: number;
+  size: number;
+}
+
+function selectedTrash(
+  groups: Array<{ id: number; files: Array<{ size: number }> }>,
+  statesByGroup: Map<number, ThumbState[]>,
+): SelectionSummary {
+  let count = 0;
+  let size = 0;
+
+  for (const group of groups) {
+    const states = statesByGroup.get(group.id);
+    if (!states) continue;
+    states.forEach((state, index) => {
+      if (state === 'trash') {
+        count += 1;
+        size += group.files[index].size;
+      }
+    });
+  }
+
+  return { count, size };
 }
 
 export function ReviewScreen({
   scanResult,
   reviewedCategories,
-  skippedCategories,
-  onToggleSkip,
   dupStates,
   simStates,
-  orientSelected,
-  renameSelected,
-  dateSelected,
-  nonPhotoSelected,
-  aiOrientIssues,
   onNavigate,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
-  // Duplicate stats
-  const dupCount = scanResult.duplicates.reduce((sum, g) => sum + g.files.length, 0);
-  const dupGroups = scanResult.duplicates.length;
-  let dupReclaimable = 0;
-  let dupTrashCount = 0;
-  for (const group of scanResult.duplicates) {
-    const states = dupStates.get(group.id);
-    if (!states) continue;
-    states.forEach((state, i) => {
-      if (state === 'trash') {
-        dupReclaimable += group.files[i].size;
-        dupTrashCount++;
-      }
-    });
-  }
-
-  // Similar stats
-  const simCount = scanResult.similar_groups.reduce((sum, g) => sum + g.files.length, 0);
-  const simGroups = scanResult.similar_groups.length;
-  let simReclaimable = 0;
-  let simTrashCount = 0;
-  for (const group of scanResult.similar_groups) {
-    const states = simStates.get(group.id);
-    if (!states) continue;
-    states.forEach((state, i) => {
-      if (state === 'trash') {
-        simReclaimable += group.files[i].size;
-        simTrashCount++;
-      }
-    });
-  }
-
-  // Orientation stats (from AI detection)
-  const orientCount = aiOrientIssues.length;
-  const orientScanned = reviewedCategories.has('orientation') || orientCount > 0;
-
-  // Rename stats
-  const renameCount = scanResult.rename_preview.length;
-
-  const activeCount = [...reviewedCategories].filter(c => !skippedCategories.has(c)).length;
+  const duplicateCopies = scanResult.duplicates.reduce(
+    (sum, group) => sum + Math.max(0, group.files.length - 1),
+    0,
+  );
+  const similarFiles = scanResult.similar_groups.reduce(
+    (sum, group) => sum + group.files.length,
+    0,
+  );
+  const duplicateSelection = selectedTrash(scanResult.duplicates, dupStates);
+  const similarSelection = selectedTrash(scanResult.similar_groups, simStates);
+  const selectedCount = duplicateSelection.count + similarSelection.count;
+  const selectedSize = duplicateSelection.size + similarSelection.size;
+  const hasReviewItems = duplicateCopies > 0 || similarFiles > 0;
+  const modeCopy = scanResult.mode === 'inbox'
+    ? '這次以 LINE／WeChat 照片為主；日期不確定的照片會留下來確認，不會猜了就寫進檔案。'
+    : '這次先把各處照片合併盤點；相同副本只留一份，看起來相似的照片交給你決定。';
 
   return (
     <div className="screen">
-      <div className="review-wrap">
-        <div className="review-top">
-          <h2>Scan Results</h2>
-          <span className="review-info">
-            {scanResult.total_files} files &middot; {formatSize(scanResult.total_size)} &middot; {scanResult.base_dir}
-          </span>
-        </div>
-        <div className="review-sub">
-          Click a card to review details. Nothing changes until you confirm.
-        </div>
+      <main className="intake-review">
+        <header className="intake-review-head">
+          <div>
+            <div className="result-status"><span>✓</span> 唯讀掃描完成 · 尚未更動任何檔案</div>
+            <h1>這批照片，我們看清楚了</h1>
+            <p>{modeCopy}</p>
+          </div>
+          <button className="btn-secondary" onClick={() => onNavigate('scan')}>重新選擇</button>
+        </header>
 
-        <div className="sgrid">
-          <SummaryCard
-            icon={'\uD83D\uDCCB'}
-            title="Duplicate Files"
-            count={dupCount}
-            description={
-              dupCount > 0 ? (
-                <>
-                  <strong>{dupGroups} groups</strong> of identical files<br />
-                  Can free up <strong>{formatSize(dupReclaimable)}</strong>
-                </>
-              ) : (
-                <span className="safe">No duplicates found</span>
-              )
-            }
-            action={dupCount > 0 ? 'Review duplicates \u2192' : ''}
-            reviewed={reviewedCategories.has('duplicates')}
-            skipped={skippedCategories.has('duplicates')}
-            noIssue={dupCount === 0}
-            onClick={dupCount > 0 ? () => onNavigate('duplicates') : undefined}
-            onSkip={() => onToggleSkip('duplicates')}
-          />
-          <SummaryCard
-            icon={'\uD83D\uDD0D'}
-            title="Similar Photos"
-            count={simCount}
-            description={
-              simCount > 0 ? (
-                <>
-                  <strong>{simGroups} groups</strong> of similar photos<br />
-                  Can free up <strong>{formatSize(simReclaimable)}</strong>
-                </>
-              ) : (
-                <span className="safe">No similar photos found</span>
-              )
-            }
-            action={simCount > 0 ? 'Review similar \u2192' : ''}
-            reviewed={reviewedCategories.has('similar')}
-            skipped={skippedCategories.has('similar')}
-            noIssue={simCount === 0}
-            onClick={simCount > 0 ? () => onNavigate('similar') : undefined}
-            onSkip={() => onToggleSkip('similar')}
-          />
-          <SummaryCard
-            icon={'\u270F\uFE0F'}
-            title="Rename by Date"
-            count={renameCount}
-            description={
-              renameCount > 0 ? (
-                <>
-                  <strong>{renameCount} files</strong> can be renamed to date format<br />
-                  {renameSelected.size} selected
-                </>
-              ) : (
-                <span className="safe">All files already named by date</span>
-              )
-            }
-            action={renameCount > 0 ? 'Preview renames \u2192' : ''}
-            reviewed={reviewedCategories.has('rename')}
-            skipped={skippedCategories.has('rename')}
-            noIssue={renameCount === 0}
-            onClick={renameCount > 0 ? () => onNavigate('rename') : undefined}
-            onSkip={() => onToggleSkip('rename')}
-          />
-          <SummaryCard
-            icon={'\uD83D\uDD04'}
-            title="Orientation Fix"
-            count={orientScanned ? orientCount : '?'}
-            description={
-              !orientScanned ? (
-                <span>Click to scan with AI</span>
-              ) : orientCount > 0 ? (
-                <>
-                  <strong>{orientCount} photos/videos</strong> need rotation<br />
-                  {orientSelected.size} selected
-                </>
-              ) : (
-                <span className="safe">All orientations correct</span>
-              )
-            }
-            action={!orientScanned ? 'Scan with AI \u2192' : orientCount > 0 ? 'Review orientation \u2192' : ''}
-            reviewed={reviewedCategories.has('orientation')}
-            skipped={skippedCategories.has('orientation')}
-            noIssue={orientScanned && orientCount === 0}
-            onClick={() => onNavigate('orientation')}
-            onSkip={() => onToggleSkip('orientation')}
-          />
-          <SummaryCard
-            icon={'\uD83D\uDCC2'}
-            title="Non-Photo Files"
-            count={scanResult.non_photos.length}
-            description={
-              scanResult.non_photos.length > 0 ? (() => {
-                const totalSize = scanResult.non_photos.reduce((sum, n) => sum + n.file.size, 0);
-                return (
-                  <>
-                    <strong>{scanResult.non_photos.length} files</strong> ({formatSize(totalSize)})<br />
-                    {nonPhotoSelected.size} selected to move
-                  </>
-                );
-              })() : (
-                <span className="safe">No non-photo files detected</span>
-              )
-            }
-            action={scanResult.non_photos.length > 0 ? 'Review files \u2192' : ''}
-            reviewed={reviewedCategories.has('non-photos')}
-            skipped={skippedCategories.has('non-photos')}
-            noIssue={scanResult.non_photos.length === 0}
-            onClick={scanResult.non_photos.length > 0 ? () => onNavigate('non-photos') : undefined}
-            onSkip={() => onToggleSkip('non-photos')}
-          />
-          <SummaryCard
-            icon={'\uD83C\uDFAC'}
-            title="Video Compression"
-            count={0}
-            description={<span className="safe">Coming soon</span>}
-            action=""
-            reviewed={false}
-            skipped={false}
-            noIssue={true}
-          />
-          <SummaryCard
-            icon={'\uD83D\uDCC5'}
-            title="File Dates"
-            count={scanResult.date_mismatches.length}
-            description={
-              scanResult.date_mismatches.length > 0 ? (
-                <>
-                  <strong>{scanResult.date_mismatches.length} files</strong> have wrong mtime<br />
-                  {dateSelected.size} selected to fix
-                </>
-              ) : (
-                <span className="safe">All dates match EXIF</span>
-              )
-            }
-            action={scanResult.date_mismatches.length > 0 ? 'Review dates \u2192' : ''}
-            reviewed={reviewedCategories.has('dates')}
-            skipped={skippedCategories.has('dates')}
-            noIssue={scanResult.date_mismatches.length === 0}
-            onClick={scanResult.date_mismatches.length > 0 ? () => onNavigate('dates') : undefined}
-            onSkip={() => onToggleSkip('dates')}
-          />
-        </div>
+        <section className="result-metrics" aria-label="掃描摘要">
+          <div className="result-metric primary">
+            <strong>{scanResult.ready_to_collect.toLocaleString()}</strong>
+            <span>張照片與影片</span>
+            <small>準備納入整理</small>
+          </div>
+          <div className="result-metric">
+            <strong>{duplicateCopies.toLocaleString()}</strong>
+            <span>個相同副本</span>
+            <small>{scanResult.duplicates.length} 組完全相同</small>
+          </div>
+          <div className="result-metric">
+            <strong>{scanResult.messaging_files.toLocaleString()}</strong>
+            <span>張聊天照片</span>
+            <small>LINE／WeChat 也是正式照片</small>
+          </div>
+          <div className={`result-metric${scanResult.missing_dates > 0 ? ' attention' : ''}`}>
+            <strong>{scanResult.missing_dates.toLocaleString()}</strong>
+            <span>張日期待確認</span>
+            <small>不確定就不自動修改</small>
+          </div>
+        </section>
 
-        {activeCount > 0 && (
-          <div className="review-execute-bar">
-            <div className="reb-text">
-              {'\u2713'} <strong>{activeCount}</strong> {activeCount === 1 ? 'category' : 'categories'} ready to execute.
+        <section className="source-summary" aria-labelledby="source-summary-title">
+          <div className="section-title-row">
+            <div>
+              <h2 id="source-summary-title">這次看了哪些地方</h2>
+              <p>共 {scanResult.total_files.toLocaleString()} 個媒體檔，{formatSize(scanResult.total_size)}</p>
             </div>
-            <button className="btn-execute" onClick={() => onNavigate('confirm')}>
-              Review &amp; Confirm {'\u2192'}
+            <span className="read-only-badge">唯讀</span>
+          </div>
+          <div className="source-summary-list">
+            {scanResult.sources.map((source) => (
+              <div className="source-summary-row" key={source.path} title={source.path}>
+                <span className="source-folder-icon">⌂</span>
+                <div className="source-summary-name">
+                  <strong>{source.label}</strong>
+                  <small>{source.path}</small>
+                </div>
+                <span>{source.photo_count.toLocaleString()} 張照片</span>
+                <span>{source.video_count.toLocaleString()} 部影片</span>
+                <span>{formatSize(source.total_size)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="decision-section" aria-labelledby="decision-title">
+          <div className="section-title-row">
+            <div>
+              <h2 id="decision-title">只有這些需要你看</h2>
+              <p>能確定的由 phoxif 處理；可能誤判的，一律先問你。</p>
+            </div>
+          </div>
+          <div className="decision-grid">
+            <button
+              className={`decision-card${reviewedCategories.has('duplicates') ? ' reviewed' : ''}`}
+              disabled={duplicateCopies === 0}
+              onClick={() => onNavigate('duplicates')}
+            >
+              <span className="decision-icon">＝</span>
+              <span className="decision-copy">
+                <strong>完全相同的照片</strong>
+                {duplicateCopies > 0 ? (
+                  <small>{scanResult.duplicates.length} 組、{duplicateCopies} 個多出的副本；先讓你確認保留哪一份。</small>
+                ) : (
+                  <small>沒有找到完全相同的副本。</small>
+                )}
+              </span>
+              <span className="decision-action">{duplicateCopies > 0 ? '檢查 →' : '✓'}</span>
+            </button>
+
+            <button
+              className={`decision-card${reviewedCategories.has('similar') ? ' reviewed' : ''}`}
+              disabled={similarFiles === 0}
+              onClick={() => onNavigate('similar')}
+            >
+              <span className="decision-icon">◫</span>
+              <span className="decision-copy">
+                <strong>看起來很像的照片</strong>
+                {similarFiles > 0 ? (
+                  <small>{scanResult.similar_groups.length} 組、{similarFiles} 張；永遠不會自動刪除。</small>
+                ) : (
+                  <small>沒有需要人工判斷的相似照片。</small>
+                )}
+              </span>
+              <span className="decision-action">{similarFiles > 0 ? '檢查 →' : '✓'}</span>
             </button>
           </div>
+        </section>
+
+        {selectedCount > 0 ? (
+          <div className="result-next-bar">
+            <div>
+              <strong>已選 {selectedCount} 個副本</strong>
+              <span>預計移到系統垃圾桶，可釋放 {formatSize(selectedSize)}；執行前還會再確認一次。</span>
+            </div>
+            <button className="btn-execute" onClick={() => onNavigate('confirm')}>查看執行方案 →</button>
+          </div>
+        ) : (
+          <div className="result-honesty-bar">
+            <span className="honesty-icon">i</span>
+            <div>
+              <strong>{hasReviewItems ? '請先檢查上面的例外' : '盤點完成，原始檔案保持不動'}</strong>
+              <span>歸檔到相簿／NAS 與補日期會在後續階段接上；目前不會假裝已經整理完成。</span>
+            </div>
+          </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }

@@ -19,16 +19,9 @@ from phoxif.api.actions import (
     rename_files,
     trash_files,
 )
-from phoxif.api.classifier import classify_non_photos
 from phoxif.api.logger import OperationLogger
-from phoxif.api.rename import generate_rename_preview
-from phoxif.api.scanner import (
-    find_date_mismatches,
-    find_duplicates,
-    find_exif_orientation_issues,
-    scan_folder,
-)
-from phoxif.api.similar import find_similar_groups
+from phoxif.api.scanner import scan_folder
+from phoxif.pipeline.census import IntakeMode, scan_sources
 
 router = APIRouter(prefix="/api")
 
@@ -43,6 +36,14 @@ class ScanRequest(BaseModel):
     """Request body for /api/scan."""
 
     path: str
+    extensions: list[str] | None = None
+
+
+class IntakeScanRequest(BaseModel):
+    """Request body for a read-only multi-source photo census."""
+
+    paths: list[str]
+    mode: IntakeMode
     extensions: list[str] | None = None
 
 
@@ -225,6 +226,26 @@ def _resolve_folder_path(raw_path: str) -> Path | None:
 # --- Routes ---
 
 
+def _normalize_extensions(extensions: list[str] | None) -> set[str] | None:
+    """Normalize optional API extensions to scanner format."""
+    if not extensions:
+        return None
+    return {extension if extension.startswith(".") else f".{extension}" for extension in extensions}
+
+
+def _cache_census(scan_data: dict[str, Any]) -> None:
+    """Cache each source independently for legacy review/action routes."""
+    for base_dir in scan_data["base_dirs"]:
+        _scan_cache[base_dir] = {
+            "files": [
+                file_info
+                for file_info in scan_data["files"]
+                if file_info.get("source_root") == base_dir
+            ],
+            "exiftool_available": scan_data["exiftool_available"],
+        }
+
+
 @router.post("/scan", response_model=ApiResponse)
 async def api_scan(req: ScanRequest) -> ApiResponse:
     """Scan a folder and return file metadata + duplicate groups.
@@ -238,80 +259,42 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
     resolved = _resolve_folder_path(req.path)
     if resolved is None:
         return ApiResponse(ok=False, error=f"Path not found: {req.path}")
-    base_dir = resolved
-
-    extensions: set[str] | None = None
-    if req.extensions:
-        extensions = {
-            ext if ext.startswith(".") else f".{ext}" for ext in req.extensions
-        }
-
     try:
-        result = scan_folder(base_dir, extensions)
-        duplicates = find_duplicates(result["files"])
-
-        rename_preview = generate_rename_preview(result["files"])
-        # Files without parseable dates can't be renamed; don't count them
-        files_without_date = len(
-            [
-                f
-                for f in result["files"]
-                if f.get("date") is None or isinstance(f.get("date"), (int, float))
-            ]
+        scan_data = scan_sources(
+            [resolved],
+            mode="rescue",
+            extensions=_normalize_extensions(req.extensions),
         )
-        already_named = len(result["files"]) - len(rename_preview) - files_without_date
-        orientation_issues = find_exif_orientation_issues(result["files"])
-        similar_groups = find_similar_groups(result["files"])
-        date_mismatches = find_date_mismatches(result["files"])
-        non_photos = classify_non_photos(result["files"])
-
-        scan_data = {
-            "base_dir": str(base_dir),
-            "files": result["files"],
-            "stats": result["stats"],
-            "duplicates": duplicates,
-            "exiftool_available": result["exiftool_available"],
-            "duplicate_stats": {
-                "groups": len(duplicates),
-                "total_duplicates": sum(d["count"] for d in duplicates),
-                "wasted_size": sum(d["wasted_size"] for d in duplicates),
-            },
-            "rename_preview": rename_preview,
-            "rename_stats": {
-                "renameable": len(rename_preview),
-                "already_named": already_named,
-            },
-            "exif_orientation_issues": orientation_issues,
-            "exif_orientation_stats": {
-                "issues_count": len(orientation_issues),
-            },
-            "similar_groups": similar_groups,
-            "similar_stats": {
-                "groups": len(similar_groups),
-                "total_similar": sum(g["count"] for g in similar_groups),
-                "reclaimable_size": sum(g["reclaimable_size"] for g in similar_groups),
-            },
-            "date_mismatches": date_mismatches,
-            "date_stats": {
-                "mismatches": len(date_mismatches),
-                "total_checked": len(result["files"]),
-            },
-            "non_photos": non_photos,
-            "non_photo_stats": {
-                "total": len(non_photos),
-                "by_category": {
-                    cat: len([n for n in non_photos if n["category"] == cat])
-                    for cat in {n["category"] for n in non_photos}
-                },
-            },
-        }
-
-        # Cache for other endpoints (use resolved path for consistent matching)
-        _scan_cache[str(base_dir)] = scan_data
-
+        _cache_census(scan_data)
         return ApiResponse(ok=True, data=scan_data)
     except Exception as e:
         return ApiResponse(ok=False, error=str(e))
+
+
+@router.post("/intake/scan", response_model=ApiResponse)
+async def api_intake_scan(req: IntakeScanRequest) -> ApiResponse:
+    """Inspect historical or messaging sources without modifying them."""
+    if not req.paths:
+        return ApiResponse(ok=False, error="Choose at least one photo source")
+
+    resolved_paths: list[Path] = []
+    for raw_path in req.paths:
+        resolved = _resolve_folder_path(raw_path)
+        if resolved is None:
+            return ApiResponse(ok=False, error=f"Path not found: {raw_path}")
+        if resolved not in resolved_paths:
+            resolved_paths.append(resolved)
+
+    try:
+        scan_data = scan_sources(
+            resolved_paths,
+            mode=req.mode,
+            extensions=_normalize_extensions(req.extensions),
+        )
+        _cache_census(scan_data)
+        return ApiResponse(ok=True, data=scan_data)
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
 
 
 @router.get("/scan/status", response_model=ApiResponse)

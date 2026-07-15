@@ -5,11 +5,11 @@ interface StepBarProps {
 }
 
 const STEPS = [
-  { num: 1, label: 'Scan' },
-  { num: 2, label: 'Review' },
-  { num: 3, label: 'Confirm' },
-  { num: 4, label: 'Execute' },
-  { num: 5, label: 'Done' },
+  { num: 1, label: '加入照片' },
+  { num: 2, label: '檢查例外' },
+  { num: 3, label: '確認方案' },
+  { num: 4, label: '執行整理' },
+  { num: 5, label: '完成' },
 ];
 
 export function StepBar({ currentStep }: StepBarProps): React.JSX.Element {

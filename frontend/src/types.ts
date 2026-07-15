@@ -53,10 +53,27 @@ export interface NonPhotoItem {
   reason: string;
 }
 
+export type IntakeMode = 'rescue' | 'inbox';
+
+export interface SourceSummary {
+  path: string;
+  label: string;
+  total_files: number;
+  total_size: number;
+  photo_count: number;
+  video_count: number;
+}
+
 export interface ScanResult {
+  mode: IntakeMode;
   total_files: number;
   total_size: number;
   base_dir: string;
+  source_paths: string[];
+  sources: SourceSummary[];
+  ready_to_collect: number;
+  missing_dates: number;
+  messaging_files: number;
   duplicates: DuplicateGroup[];
   similar_groups: SimilarGroup[];
   orientation_issues: OrientationIssue[];

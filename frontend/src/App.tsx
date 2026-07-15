@@ -279,28 +279,16 @@ export function App(): React.JSX.Element {
     return ops;
   }, [scanResult, reviewedCategories, skippedCategories, dupStates, simStates, orientSelected, renameSelected, dateSelected, nonPhotoSelected, operationOrder, aiOrientIssues]);
 
-  const toggleSkip = useCallback((category: string) => {
-    setSkippedCategories(prev => {
-      const next = new Set(prev);
-      if (next.has(category)) {
-        next.delete(category);
-      } else {
-        next.add(category);
-      }
-      return next;
-    });
-  }, []);
-
   const currentStep = stepMap[screen] ?? 1;
 
   return (
     <>
       <div className="topbar">
-        <div className="logo">phoxif <span>v0.1</span></div>
+        <div className="logo">phoxif <span>照片收件匣</span></div>
         <StepBar currentStep={currentStep} />
         <div className="topbar-spacer" />
         <button className="btn-ghost" onClick={() => navigateTo('history')}>
-          {'\uD83D\uDCCB'} History
+          {'\uD83D\uDCCB'} 整理紀錄
         </button>
       </div>
 
@@ -312,15 +300,8 @@ export function App(): React.JSX.Element {
         <ReviewScreen
           scanResult={scanResult}
           reviewedCategories={reviewedCategories}
-          skippedCategories={skippedCategories}
-          onToggleSkip={toggleSkip}
           dupStates={dupStates}
           simStates={simStates}
-          orientSelected={orientSelected}
-          renameSelected={renameSelected}
-          dateSelected={dateSelected}
-          nonPhotoSelected={nonPhotoSelected}
-          aiOrientIssues={aiOrientIssues}
           onNavigate={navigateTo}
           formatSize={formatSize}
         />

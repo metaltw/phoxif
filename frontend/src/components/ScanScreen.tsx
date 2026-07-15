@@ -1,114 +1,74 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { ScanResult } from '../types';
-import { scanFolder, pickFolder } from '../api';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { IntakeMode, ScanResult } from '../types';
+import { pickFolder, scanSources } from '../api';
 
 interface ScanScreenProps {
   onComplete: (result: ScanResult) => void;
 }
 
 const SCAN_MESSAGES = [
-  'Reading file metadata...',
-  'Checking duplicates (MD5)...',
-  'Detecting similar photos...',
-  'Analyzing video codecs...',
-  'Reverse geocoding GPS...',
-  'Building results...',
+  '正在讀取照片與影片資訊…',
+  '正在比對不同來源裡的相同檔案…',
+  '正在尋找可能的聊天軟體壓縮版本…',
+  '正在檢查遺失或不可靠的日期…',
+  '正在準備整理摘要…',
 ];
 
 export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
   const [scanning, setScanning] = useState(false);
+  const [mode, setMode] = useState<IntakeMode>('rescue');
+  const [sources, setSources] = useState<string[]>([]);
+  const [manualPath, setManualPath] = useState('');
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState('');
-  const [folderPath, setFolderPath] = useState('');
-  const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  const startScan = useCallback((path: string) => {
-    if (!path.trim()) return;
+  const startScan = useCallback(() => {
+    if (sources.length === 0) return;
     setError(null);
     setScanning(true);
     setProgress(0);
     setMessage(SCAN_MESSAGES[0]);
 
-    scanFolder(path.trim())
+    scanSources(sources, mode)
       .then((result) => {
         setProgress(100);
-        setMessage('Complete!');
+        setMessage('掃描完成');
         setTimeout(() => onComplete(result), 400);
       })
       .catch((err) => {
-        console.error('Scan failed:', err);
+        console.error('Source scan failed:', err);
         setScanning(false);
-        setError(err instanceof Error ? err.message : 'Scan failed. Is the backend running?');
+        setError(err instanceof Error ? err.message : '無法讀取來源，請確認資料夾仍然可用。');
       });
-  }, [onComplete]);
+  }, [mode, onComplete, sources]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      startScan(folderPath);
-    }
-  }, [folderPath, startScan]);
+  const addSource = useCallback((path: string) => {
+    const normalized = path.trim();
+    if (!normalized) return;
+    setSources((current) => current.includes(normalized) ? current : [...current, normalized]);
+    setManualPath('');
+    setError(null);
+  }, []);
 
   const handleBrowse = useCallback(async () => {
     const path = await pickFolder();
     if (path) {
-      setFolderPath(path);
-      setError(null);
+      addSource(path);
     }
-  }, []);
-
-  // Drag & drop handlers
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-
-    // Try to get folder path from dropped items
-    const items = e.dataTransfer.items;
-    if (items && items.length > 0) {
-      const item = items[0];
-      // webkitGetAsEntry gives us the path for local files
-      const entry = item.webkitGetAsEntry?.();
-      if (entry?.isDirectory) {
-        // webkitGetAsEntry fullPath is a virtual path (e.g. "/FolderName"), not a real FS path.
-        // Use just the name and let the backend resolve it.
-        setFolderPath(entry.name);
-        return;
-      }
-    }
-
-    // Fallback: try files
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      // Can't get directory path from File API, show hint
-      setError('Drag a folder from Finder, or type the path below.');
-    }
-  }, []);
+  }, [addSource]);
 
   // Progress animation
   useEffect(() => {
     if (!scanning) return;
     let p = 0;
     intervalRef.current = setInterval(() => {
-      p += Math.random() * 15 + 5;
+      p += Math.random() * 12 + 4;
       if (p > 95) p = 95;
       setProgress(prev => prev >= 100 ? 100 : Math.min(p, 95));
-      setMessage(SCAN_MESSAGES[Math.min(Math.floor(p / 18), SCAN_MESSAGES.length - 1)]);
-    }, 300);
+      setMessage(SCAN_MESSAGES[Math.min(Math.floor(p / 21), SCAN_MESSAGES.length - 1)]);
+    }, 450);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
@@ -124,6 +84,9 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
               <div className="scan-pfill" style={{ width: `${progress}%` }} />
             </div>
             <div className="scan-ptext">{message}</div>
+            <div className="scan-source-count">
+              正在安全讀取 {sources.length} 個來源；原始檔不會被修改
+            </div>
           </div>
         </div>
       </div>
@@ -132,113 +95,102 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
 
   return (
     <div className="screen-center">
-      <div className="scan-wrap">
-        <h1>Organize Your Photos</h1>
-        <p style={{ color: 'var(--dim)', fontSize: '15px', marginBottom: '28px' }}>
-          Enter a folder path or drag it from Finder
+      <div className="inbox-start">
+        <div className="inbox-eyebrow">PHOXIF PHOTO INBOX</div>
+        <h1>把散落的照片，安全帶回同一個家</h1>
+        <p className="inbox-lead">
+          加入舊硬碟、手機備份，或 LINE／WeChat 匯出資料夾。先看清楚，再決定怎麼整理。
         </p>
 
-        {/* Drop zone */}
-        <div
-          className={`drop-zone ${dragOver ? 'drop-zone-active' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          style={dragOver ? { borderColor: 'var(--accent)', background: 'var(--accent-dim)' } : undefined}
-        >
-          <div className="dz-icon">📂</div>
-          <div className="dz-text">Drop a folder here</div>
-        </div>
-
-        {/* Path input */}
-        <div style={{
-          display: 'flex',
-          gap: '8px',
-          width: '480px',
-          margin: '16px auto',
-        }}>
-          <input
-            ref={inputRef}
-            type="text"
-            value={folderPath}
-            onChange={(e) => { setFolderPath(e.target.value); setError(null); }}
-            onKeyDown={handleKeyDown}
-            placeholder="~/Photos/2026-March-Trip"
-            style={{
-              flex: 1,
-              padding: '10px 14px',
-              background: 'var(--bg3)',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              color: 'var(--bright)',
-              fontSize: '14px',
-              fontFamily: "'SF Mono', 'Fira Code', monospace",
-              outline: 'none',
-            }}
-            onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = 'var(--accent)'; }}
-            onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = 'var(--border)'; }}
-          />
+        <div className="mode-grid" role="radiogroup" aria-label="整理方式">
           <button
-            onClick={handleBrowse}
-            style={{
-              padding: '10px 14px',
-              background: 'transparent',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-              color: 'var(--dim)',
-              fontSize: '13px',
-              cursor: 'pointer',
-            }}
-            title="Browse..."
+            type="button"
+            role="radio"
+            aria-checked={mode === 'rescue'}
+            className={`mode-card${mode === 'rescue' ? ' selected' : ''}`}
+            onClick={() => setMode('rescue')}
           >
-            📁
+            <span className="mode-icon">◫</span>
+            <strong>整理多年舊照片</strong>
+            <span>一次加入多台電腦、硬碟與手機備份，跨來源找出重複。</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={mode === 'inbox'}
+            className={`mode-card${mode === 'inbox' ? ' selected' : ''}`}
+            onClick={() => setMode('inbox')}
+          >
+            <span className="mode-icon">⇩</span>
+            <strong>整理 LINE／WeChat 新照片</strong>
+            <span>辨認聊天軟體壓縮版，盡量配回原圖與正確日期。</span>
           </button>
         </div>
 
-        {/* Scan button */}
-        <button
-          onClick={() => startScan(folderPath)}
-          disabled={!folderPath.trim()}
-          style={{
-            display: 'block',
-            margin: '0 auto 24px',
-            padding: '12px 40px',
-            borderRadius: '10px',
-            border: 'none',
-            background: folderPath.trim() ? 'var(--accent)' : 'var(--border)',
-            color: folderPath.trim() ? 'var(--bg)' : 'var(--dim)',
-            fontSize: '15px',
-            fontWeight: 600,
-            cursor: folderPath.trim() ? 'pointer' : 'default',
-            transition: 'all 0.15s',
-          }}
-        >
-          Scan
-        </button>
-
-        {/* Error message */}
-        {error && (
-          <div style={{
-            textAlign: 'center',
-            fontSize: '13px',
-            color: 'var(--amber)',
-            marginBottom: '16px',
-          }}>
-            {error}
+        <section className="source-box" aria-label="照片來源">
+          <div className="source-box-head">
+            <div>
+              <h2>{mode === 'rescue' ? '這次照片放在哪裡？' : '聊天照片匯出到哪裡？'}</h2>
+              <p>{mode === 'rescue' ? '可以連續加入多個資料夾，稍後一起比對。' : '可分別加入 LINE、WeChat 或其他聊天軟體資料夾。'}</p>
+            </div>
+            <button type="button" className="btn-add-source" onClick={handleBrowse}>
+              ＋ 選擇資料夾
+            </button>
           </div>
-        )}
 
-        {/* Safety banner */}
-        <div className="safety-banner">
-          <div className="sb-icon">🛡️</div>
-          <div className="sb-text">
-            <strong>Your files are safe.</strong><br />
-            phoxif never permanently deletes files. Removals go to system Trash.<br />
-            EXIF changes are logged for undo. Originals always preserved.
+          {sources.length === 0 ? (
+            <button type="button" className="empty-source" onClick={handleBrowse}>
+              <span>＋</span>
+              <strong>加入第一個照片資料夾</strong>
+              <small>現在只會讀取，不會移動、改名或刪除任何檔案</small>
+            </button>
+          ) : (
+            <div className="source-list">
+              {sources.map((source, index) => (
+                <div className="source-row" key={source}>
+                  <span className="source-number">{index + 1}</span>
+                  <span className="source-path">{source}</span>
+                  <button
+                    type="button"
+                    className="source-remove"
+                    aria-label={`移除 ${source}`}
+                    onClick={() => setSources(current => current.filter(item => item !== source))}
+                  >
+                    移除
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="manual-source">
+            <input
+              type="text"
+              value={manualPath}
+              onChange={(event) => setManualPath(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') addSource(manualPath);
+              }}
+              placeholder="也可以貼上資料夾路徑"
+            />
+            <button type="button" onClick={() => addSource(manualPath)} disabled={!manualPath.trim()}>
+              加入
+            </button>
           </div>
+
+          {error && <div className="source-error">{error}</div>}
+        </section>
+
+        <div className="start-actions">
+          <div className="read-only-note">
+            <span>✓</span>
+            <div><strong>第一步完全唯讀</strong><small>掃描完成後，所有動作都會先列給你確認。</small></div>
+          </div>
+          <button type="button" className="btn-start-census" onClick={startScan} disabled={sources.length === 0}>
+            看看這批照片怎麼整理 →
+          </button>
         </div>
       </div>
     </div>
   );
 }
-

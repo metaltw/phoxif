@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem } from './types';
+import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -58,7 +58,10 @@ function mapFile(f: ScanFileData): FileInfo {
 }
 
 interface ScanData {
+  mode?: IntakeMode;
   base_dir?: string;
+  base_dirs?: string[];
+  sources?: SourceSummary[];
   files: ScanFileData[];
   stats: {
     total_files: number;
@@ -67,6 +70,9 @@ interface ScanData {
     video_count: number;
     with_gps: number;
     without_gps: number;
+    ready_to_collect?: number;
+    missing_dates?: number;
+    messaging_files?: number;
   };
   duplicates: Array<{
     hash: string;
@@ -108,14 +114,18 @@ interface ScanData {
 }
 
 export async function scanFolder(path: string): Promise<ScanResult> {
-  const data = await request<ScanData>('/scan', {
+  return scanSources([path], 'rescue');
+}
+
+export async function scanSources(paths: string[], mode: IntakeMode): Promise<ScanResult> {
+  const data = await request<ScanData>('/intake/scan', {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ paths, mode }),
   });
 
   const duplicates = data.duplicates.map((group, idx) => ({
     id: idx + 1,
-    reason: 'MD5 match',
+    reason: 'Identical file',
     keep_index: 0,
     files: group.files.map(mapFile),
   }));
@@ -150,9 +160,22 @@ export async function scanFolder(path: string): Promise<ScanResult> {
   }));
 
   return {
+    mode: data.mode ?? mode,
     total_files: data.stats.total_files,
     total_size: data.stats.total_size,
-    base_dir: data.base_dir ?? path,
+    base_dir: data.base_dir ?? paths[0] ?? '',
+    source_paths: data.base_dirs ?? paths,
+    sources: data.sources ?? paths.map(path => ({
+      path,
+      label: path.split('/').filter(Boolean).pop() ?? path,
+      total_files: 0,
+      total_size: 0,
+      photo_count: 0,
+      video_count: 0,
+    })),
+    ready_to_collect: data.stats.ready_to_collect ?? data.stats.total_files,
+    missing_dates: data.stats.missing_dates ?? 0,
+    messaging_files: data.stats.messaging_files ?? 0,
     duplicates,
     similar_groups,
     orientation_issues: [],
