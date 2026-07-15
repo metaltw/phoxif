@@ -97,7 +97,32 @@ def _values_match(actual: Any, expected: Any) -> bool:
         and re.fullmatch(r"[+-]\d{2}:\d{2}", actual[len(expected) :])
     ):
         return True
+    actual_gps = _gps_pair(actual)
+    expected_gps = _gps_pair(expected)
+    if actual_gps is not None and expected_gps is not None:
+        return abs(actual_gps[0] - expected_gps[0]) < 1e-7 and abs(
+            actual_gps[1] - expected_gps[1]
+        ) < 1e-7
     return str(actual) == str(expected)
+
+
+def _gps_pair(value: Any) -> tuple[float, float] | None:
+    """Parse ExifTool's numeric or ISO-6709 coordinate representation."""
+    if not isinstance(value, str):
+        return None
+    iso = re.fullmatch(
+        r"([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?/",
+        value,
+    )
+    if iso is not None:
+        return float(iso.group(1)), float(iso.group(2))
+    numeric = re.fullmatch(
+        r"([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)(?:\s+[+-]?\d+(?:\.\d+)?)?",
+        value,
+    )
+    if numeric is not None:
+        return float(numeric.group(1)), float(numeric.group(2))
+    return None
 
 
 def _timezone_environment(timezone_name: str | None) -> dict[str, str] | None:

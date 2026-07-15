@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
-import { analyzeDuplicates, approvePendingTrash, executeDates, fetchPendingTrash, ingestSources, planDates, resolveDuplicate } from './api';
+import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import { analyzeDuplicates, approvePendingTrash, executeDates, executeGps, fetchPendingTrash, ingestSources, planDates, planGps, resolveDuplicate } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -55,6 +55,10 @@ export function App(): React.JSX.Element {
   const [dateExecution, setDateExecution] = useState<DateExecutionSummary | null>(null);
   const [dating, setDating] = useState(false);
   const [dateError, setDateError] = useState<string | null>(null);
+  const [gpsPlan, setGpsPlan] = useState<GpsPlanSummary | null>(null);
+  const [gpsExecution, setGpsExecution] = useState<GpsExecutionSummary | null>(null);
+  const [gpsing, setGpsing] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
   const [reviewedCategories, setReviewedCategories] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
 
@@ -101,6 +105,9 @@ export function App(): React.JSX.Element {
     setDatePlan(null);
     setDateExecution(null);
     setDateError(null);
+    setGpsPlan(null);
+    setGpsExecution(null);
+    setGpsError(null);
 
     // Init duplicate states
     const dStates = new Map<number, ThumbState[]>();
@@ -259,6 +266,46 @@ export function App(): React.JSX.Element {
     }
   }, [ingestSummary]);
 
+  const handleGpsPlan = useCallback(async () => {
+    if (!ingestSummary) return;
+    setGpsing(true);
+    setGpsError(null);
+    try {
+      const result = await planGps(ingestSummary.batches.map(batch => batch.batch_id));
+      setGpsPlan(result);
+      if (!result.complete) {
+        setGpsError('部分來源的位置證據無法讀取；請查看錯誤後安全重試。');
+      }
+    } catch (error) {
+      setGpsError(error instanceof Error ? error.message : 'GPS 證據分析失敗');
+    } finally {
+      setGpsing(false);
+    }
+  }, [ingestSummary]);
+
+  const handleGpsExecute = useCallback(async () => {
+    if (!ingestSummary) return;
+    setGpsing(true);
+    setGpsError(null);
+    try {
+      const result = await executeGps(ingestSummary.batches.map(batch => batch.batch_id));
+      setGpsExecution(result);
+      if (!result.complete) {
+        setGpsError('部分位置處理失敗；未成功的檔案不會被當成已完成。');
+        return;
+      }
+      const refreshed = await planGps(ingestSummary.batches.map(batch => batch.batch_id));
+      setGpsPlan(refreshed);
+      if (!refreshed.complete) {
+        setGpsError('位置已處理，但最新狀態載入不完整；請安全重試檢查。');
+      }
+    } catch (error) {
+      setGpsError(error instanceof Error ? error.message : 'GPS 補齊失敗');
+    } finally {
+      setGpsing(false);
+    }
+  }, [ingestSummary]);
+
   const resetIntake = useCallback(() => {
     setScanResult(null);
     setIngestSummary(null);
@@ -271,6 +318,9 @@ export function App(): React.JSX.Element {
     setDatePlan(null);
     setDateExecution(null);
     setDateError(null);
+    setGpsPlan(null);
+    setGpsExecution(null);
+    setGpsError(null);
     navigateTo('scan');
   }, [navigateTo]);
 
@@ -473,12 +523,18 @@ export function App(): React.JSX.Element {
           dateExecution={dateExecution}
           dating={dating}
           dateError={dateError}
+          gpsPlan={gpsPlan}
+          gpsExecution={gpsExecution}
+          gpsing={gpsing}
+          gpsError={gpsError}
           onIngest={handleIngest}
           onDedupe={handleDedupe}
           onResolvePair={handleResolvePair}
           onApproveTrash={handleApproveTrash}
           onDatePlan={handleDatePlan}
           onDateExecute={handleDateExecute}
+          onGpsPlan={handleGpsPlan}
+          onGpsExecute={handleGpsExecute}
           onReset={resetIntake}
           formatSize={formatSize}
         />

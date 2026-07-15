@@ -7,6 +7,8 @@ default_timezone: "Asia/Taipei"
 date_earliest: "1995-01-01"
 # Enable mtime fallback only after reviewing that source's census evidence.
 date_mtime_source_ids: []
+# Conservative GPS inference may be tightened but never exceed 30 minutes.
+gps_neighbor_max_minutes: 30
 folder_name_as_tag: false
 dedupe_auto_threshold: 4
 dedupe_review_threshold: 10
@@ -22,19 +24,7 @@ skip_dirs: ["Unknown", ".thumbnails", ".previews", "__pycache__"]
 # GPS coordinates for known locations
 # Used by write_gps to fill missing GPS metadata
 # Format: "FolderName": { lat: <latitude>, lon: <longitude> }
-gps_locations:
-  "Example City":
-    lat: 25.0330
-    lon: 121.5654
-  "Japan_Tokyo":
-    lat: 35.6762
-    lon: 139.6503
-  "France_Paris":
-    lat: 48.8566
-    lon: 2.3522
-  "USA_NewYork":
-    lat: 40.7128
-    lon: -74.0060
+gps_locations: {}
 
 # HEVC conversion settings
 hevc:

@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from phoxif.api import routes
 from phoxif.pipeline.catalog import Catalog
 
@@ -286,6 +288,68 @@ def test_date_plan_and_execute_routes_use_fresh_server_side_plan(
     assert execute_response.ok is True
     assert execute_response.data["complete"] is True
     assert calls == ["batch-1:catalog.db"]
+
+
+def test_gps_plan_and_execute_routes_use_fresh_server_side_plan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_plan = SimpleNamespace(
+        to_dict=lambda: {
+            "batch_id": "batch-1",
+            "items": [{"action": "write-neighbor"}],
+            "counts": {"write-neighbor": 1},
+        }
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_plan_gps_batches",
+        lambda batch_ids: ([fake_plan], []) if batch_ids == ["batch-1"] else ([], []),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_gps_settings",
+        lambda: (tmp_path / "catalog.db", "Asia/Taipei", {}, 30, False),
+    )
+
+    def fake_execute(plan, *, catalog_db, folder_name_as_tag):
+        calls.append(f"{plan.to_dict()['batch_id']}:{catalog_db.name}:{folder_name_as_tag}")
+        return {"batch_id": "batch-1", "failed": 0, "completed": 1, "results": []}
+
+    monkeypatch.setattr(routes, "execute_gps", fake_execute)
+
+    plan_response = asyncio.run(
+        routes.api_intake_gps_plan(routes.IntakeGpsRequest(batch_ids=["batch-1"]))
+    )
+    execute_response = asyncio.run(
+        routes.api_intake_gps_execute(routes.IntakeGpsRequest(batch_ids=["batch-1"]))
+    )
+
+    assert plan_response.ok is True
+    assert plan_response.data["plans"][0]["counts"]["write-neighbor"] == 1
+    assert execute_response.ok is True
+    assert execute_response.data["complete"] is True
+    assert calls == ["batch-1:catalog.db:False"]
+
+
+def test_gps_settings_reject_invalid_config_instead_of_using_defaults(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (tmp_path / "catalog.db", tmp_path / "staging"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "load_config",
+        lambda: (_ for _ in ()).throw(ValueError("invalid GPS time window")),
+    )
+
+    with pytest.raises(ValueError, match="invalid GPS time window"):
+        routes._gps_settings()
 
 
 def test_thumbnail_allows_catalog_working_copy_but_not_arbitrary_file(

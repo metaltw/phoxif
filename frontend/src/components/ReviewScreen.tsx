@@ -1,5 +1,5 @@
 import React from 'react';
-import type { DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
+import type { DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, GpsExecutionSummary, GpsPlanSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
@@ -17,12 +17,18 @@ interface ReviewScreenProps {
   dateExecution: DateExecutionSummary | null;
   dating: boolean;
   dateError: string | null;
+  gpsPlan: GpsPlanSummary | null;
+  gpsExecution: GpsExecutionSummary | null;
+  gpsing: boolean;
+  gpsError: string | null;
   onIngest: () => void;
   onDedupe: () => void;
   onResolvePair: (batchId: string, pair: DedupePair, keepSha256: string | null) => void;
   onApproveTrash: () => void;
   onDatePlan: () => void;
   onDateExecute: () => void;
+  onGpsPlan: () => void;
+  onGpsExecute: () => void;
   onReset: () => void;
   formatSize: (bytes: number) => string;
 }
@@ -43,12 +49,18 @@ export function ReviewScreen({
   dateExecution,
   dating,
   dateError,
+  gpsPlan,
+  gpsExecution,
+  gpsing,
+  gpsError,
   onIngest,
   onDedupe,
   onResolvePair,
   onApproveTrash,
   onDatePlan,
   onDateExecute,
+  onGpsPlan,
+  onGpsExecute,
   onReset,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
@@ -89,6 +101,37 @@ export function ReviewScreen({
   ) ?? [];
   const dateFailed = dateBatchFailures.length > 0 || dateItemFailures.length > 0
     || datePlan?.complete === false || dateExecution?.complete === false;
+  const dateStageComplete = datePlan !== null && !dateFailed && (
+    dateExecution?.complete === true
+    || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
+  );
+  const gpsTotals = gpsPlan?.plans.reduce(
+    (totals, plan) => ({
+      native: totals.native + (plan.counts['keep-native'] ?? 0),
+      previous: totals.previous + (plan.counts['keep-backfilled'] ?? 0),
+      mapped: totals.mapped + (plan.counts['write-mapped'] ?? 0),
+      neighbor: totals.neighbor + (plan.counts['write-neighbor'] ?? 0),
+      skipped: totals.skipped + (plan.counts.skip ?? 0),
+    }),
+    { native: 0, previous: 0, mapped: 0, neighbor: 0, skipped: 0 },
+  );
+  const gpsWrites = (gpsTotals?.mapped ?? 0) + (gpsTotals?.neighbor ?? 0);
+  const gpsWrittenCount = gpsExecution?.results.reduce(
+    (sum, result) => sum + result.results.filter(item => item.written === true).length,
+    0,
+  ) ?? 0;
+  const gpsBatchFailures = [
+    ...(gpsPlan?.failures ?? []),
+    ...(gpsExecution?.failures ?? []),
+  ];
+  const gpsItemFailures = gpsExecution?.results.flatMap(result =>
+    result.results.filter(item => item.status === 'failed'),
+  ) ?? [];
+  const gpsFailed = gpsBatchFailures.length > 0 || gpsItemFailures.length > 0
+    || gpsPlan?.complete === false || gpsExecution?.complete === false;
+  const gpsWriteItems = gpsPlan?.plans.flatMap(plan =>
+    plan.items.filter(item => item.action === 'write-mapped' || item.action === 'write-neighbor'),
+  ) ?? [];
   const duplicateCopies = scanResult.duplicates.reduce(
     (sum, group) => sum + Math.max(0, group.files.length - 1),
     0,
@@ -113,7 +156,9 @@ export function ReviewScreen({
         <header className="intake-review-head">
           <div>
             <div className="result-status"><span>✓</span> {ingestSummary
-              ? dateExecution?.complete
+              ? gpsExecution?.complete
+                ? `位置整理完成 · ${gpsWrittenCount} 筆補值都有溯源標記`
+                : dateExecution?.complete
                 ? quarantineItems.length > 0
                   ? `日期分級完成 · ${quarantineItems.length} 筆留待人工確認`
                   : '日期整理完成 · 估計值都有可搜尋溯源標記'
@@ -180,7 +225,9 @@ export function ReviewScreen({
           <div className="section-title-row">
             <div>
               <h2 id="decision-title">phoxif 會怎麼處理</h2>
-              <p>{dateExecution
+              <p>{gpsExecution
+                ? '位置只採用你確認的資料夾映射或可靠時間附近的原生 GPS；其他照片保持無 GPS；尚未碰 NAS。'
+                : dateExecution
                 ? '日期已依證據分級；自動補值只寫入安全工作檔並留下溯源，待確認項目保持不動；尚未碰 NAS。'
                 : trashSummary && trashSummary.completed > 0
                 ? '已依你的明確批准，將確認的重複檔移到系統垃圾桶；未批准的來源檔保持原位。'
@@ -353,6 +400,53 @@ export function ReviewScreen({
           </section>
         )}
 
+        {gpsPlan && gpsTotals && dateStageComplete && (
+          <section className="dedupe-result" aria-label="GPS 證據結果">
+            <h2>位置證據已保守分級</h2>
+            <p>只採用你確認的資料夾映射，或可靠拍攝時間附近的原生 GPS。聊天照片的估計日期絕不拿來推位置。</p>
+            <div className="dedupe-result-grid">
+              <div><strong>{gpsTotals.native + gpsTotals.previous}</strong><span>已有位置保留</span></div>
+              <div><strong>{gpsTotals.mapped}</strong><span>你確認的資料夾</span></div>
+              <div><strong>{gpsTotals.neighbor}</strong><span>可靠鄰近位置</span></div>
+              <div><strong>{gpsTotals.skipped}</strong><span>保持無 GPS</span></div>
+            </div>
+            {gpsWriteItems.length > 0 && (
+              <details className="gps-plan-details">
+                <summary>查看預計補位置的照片</summary>
+                <div className="date-quarantine-list">
+                  {gpsWriteItems.map(item => (
+                    <div key={`${item.batch_id}-${item.sha256}`}>
+                      <strong>{item.name}</strong>
+                      <small>{item.action === 'write-mapped'
+                        ? '使用你在 config 確認的資料夾位置'
+                        : `使用原生 GPS 鄰居（時間差最多 ${item.evidence?.offset_seconds ?? 0} 秒）`}</small>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {gpsExecution && (
+              <div className="manual-review-note">
+                已處理 {gpsExecution.results.reduce((sum, result) => sum + result.completed, 0)} 筆；
+                {gpsExecution.results.reduce((sum, result) => sum + result.failed, 0)} 筆失敗。
+              </div>
+            )}
+            {gpsFailed && (
+              <div className="date-failure" role="alert">
+                <strong>位置階段尚未完成</strong>
+                {gpsBatchFailures.map(failure => (
+                  <small key={`${failure.batch_id}-${failure.error}`}>{failure.batch_id}: {failure.error}</small>
+                ))}
+                {gpsItemFailures.map(failure => (
+                  <small key={`${failure.sha256}-${failure.error ?? 'failed'}`}>
+                    {failure.sha256.slice(0, 10)}…: {failure.error ?? '處理失敗'}
+                  </small>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
         {ingestSummary ? (
           <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
             <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
@@ -391,10 +485,16 @@ export function ReviewScreen({
                       ? onDatePlan
                       : dateFailed
                         ? dateExecution?.complete === false ? onDateExecute : onDatePlan
-                      : dateExecution?.complete || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
-                        ? onReset
-                        : onDateExecute}
-              disabled={ingesting || deduping || dating || (dedupeSummary !== null && pendingDecisionCount > 0)}
+                      : !dateStageComplete
+                        ? onDateExecute
+                        : !gpsPlan
+                          ? onGpsPlan
+                          : gpsFailed
+                            ? gpsExecution?.complete === false ? onGpsExecute : onGpsPlan
+                            : gpsWrites > 0 && !gpsExecution?.complete
+                              ? onGpsExecute
+                              : onReset}
+              disabled={ingesting || deduping || dating || gpsing || (dedupeSummary !== null && pendingDecisionCount > 0)}
             >
               {ingestFailed
                 ? (ingesting ? '正在安全重試…' : '安全重試')
@@ -409,17 +509,26 @@ export function ReviewScreen({
                           ? '檢查聊天照片日期 →'
                           : dateFailed
                             ? '安全重試日期階段'
-                          : dateExecution?.complete || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
-                            ? quarantineItems.length > 0
-                              ? `保留 ${quarantineItems.length} 筆待確認，整理下一批`
-                              : '整理下一批'
-                            : `套用 ${dateTotals?.estimated ?? 0} 筆日期並保留 ${dateTotals?.quarantine ?? 0} 筆待確認`
+                          : !dateStageComplete
+                            ? `套用 ${dateTotals?.estimated ?? 0} 筆日期並保留 ${dateTotals?.quarantine ?? 0} 筆待確認`
+                            : gpsing
+                              ? '正在檢查位置證據…'
+                              : !gpsPlan
+                                ? '檢查可安全補的位置 →'
+                                : gpsFailed
+                                  ? '安全重試位置階段'
+                                  : gpsWrites > 0 && !gpsExecution?.complete
+                                    ? `套用 ${gpsWrites} 筆有根據的位置`
+                                    : quarantineItems.length > 0
+                                      ? `保留 ${quarantineItems.length} 筆日期待確認，整理下一批`
+                                      : '整理下一批'
                   : deduping
                     ? '正在跨來源比對…'
                     : '檢查重複與例外 →'}
             </button>
             {dedupeError && <small>{dedupeError}</small>}
             {dateError && <small>{dateError}</small>}
+            {gpsError && <small>{gpsError}</small>}
           </div>
         ) : (
           <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>

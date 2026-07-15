@@ -216,7 +216,53 @@ export interface DateExecutionSummary {
     batch_id: string;
     completed: number;
     failed: number;
-    results: Array<{ sha256: string; status: string; reason?: string; error?: string }>;
+    results: Array<{ sha256: string; status: string; reason?: string; error?: string; written?: boolean }>;
+  }>;
+  failures: Array<{ batch_id: string; error: string }>;
+}
+
+export interface GpsEvidence {
+  latitude: number;
+  longitude: number;
+  source: 'folder-mapping' | 'temporal-neighbor';
+  estimated: boolean;
+  reference_sha256: string[];
+  offset_seconds: number | null;
+  folder_key: string | null;
+  keywords: string[];
+}
+
+export interface GpsPlanItem {
+  batch_id: string;
+  sha256: string;
+  path: string | null;
+  name: string;
+  media_type: string;
+  action: 'keep-native' | 'keep-backfilled' | 'write-mapped' | 'write-neighbor' | 'skip';
+  evidence: GpsEvidence | null;
+  reason: string;
+}
+
+export interface GpsBatchPlan {
+  batch_id: string;
+  timezone_name: string;
+  items: GpsPlanItem[];
+  counts: Record<'keep-native' | 'keep-backfilled' | 'write-mapped' | 'write-neighbor' | 'skip', number>;
+}
+
+export interface GpsPlanSummary {
+  complete: boolean;
+  plans: GpsBatchPlan[];
+  failures: Array<{ batch_id: string; error: string }>;
+}
+
+export interface GpsExecutionSummary {
+  complete: boolean;
+  results: Array<{
+    batch_id: string;
+    completed: number;
+    failed: number;
+    results: Array<{ sha256: string; status: string; reason?: string; error?: string; written?: boolean }>;
   }>;
   failures: Array<{ batch_id: string; error: string }>;
 }

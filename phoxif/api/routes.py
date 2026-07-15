@@ -32,6 +32,8 @@ from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH, Catalog
 from phoxif.pipeline.census import IntakeMode, scan_sources
 from phoxif.pipeline.dedupe import resolve_review, run as run_dedupe
 from phoxif.pipeline.enrich import execute_dates, plan_dates
+from phoxif.pipeline.enrich_gps import execute_gps, plan_gps
+from phoxif.pipeline.gps import valid_coordinates
 from phoxif.pipeline.ingest import DEFAULT_STAGING_ROOT, run as run_ingest
 from phoxif.pipeline.trash import execute as execute_pipeline_trash
 from phoxif.pipeline.trash import pending as pending_pipeline_trash
@@ -98,6 +100,12 @@ class PipelineTrashExecuteRequest(BaseModel):
 
 class IntakeDateRequest(BaseModel):
     """Selected ingest batches for date planning or execution."""
+
+    batch_ids: list[str]
+
+
+class IntakeGpsRequest(BaseModel):
+    """Selected ingest batches for conservative GPS planning or execution."""
 
     batch_ids: list[str]
 
@@ -400,6 +408,36 @@ def _date_settings() -> tuple[Path, str, datetime, set[str]]:
     return catalog_db, timezone_name, earliest, mtime_sources
 
 
+def _gps_settings() -> tuple[Path, str, dict[str, tuple[float, float]], int, bool]:
+    """Load and validate the conservative GPS policy."""
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    try:
+        config = load_config()
+        timezone_name = str(config["default_timezone"])
+        raw_mappings = config["gps_locations"]
+        max_minutes = int(config["gps_neighbor_max_minutes"])
+        folder_name_as_tag = bool(config["folder_name_as_tag"])
+    except FileNotFoundError:
+        timezone_name = "Asia/Taipei"
+        raw_mappings = {}
+        max_minutes = 30
+        folder_name_as_tag = False
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as error:
+        raise ValueError(f"Unknown default_timezone: {timezone_name}") from error
+    if not 1 <= max_minutes <= 30:
+        raise ValueError("gps_neighbor_max_minutes must be between 1 and 30")
+    mappings = {
+        str(key): (float(coordinates[0]), float(coordinates[1]))
+        for key, coordinates in raw_mappings.items()
+    }
+    for key, (latitude, longitude) in mappings.items():
+        if not valid_coordinates(latitude, longitude):
+            raise ValueError(f"Invalid GPS mapping for {key}")
+    return catalog_db, timezone_name, mappings, max_minutes, folder_name_as_tag
+
+
 @router.post("/intake/ingest", response_model=ApiResponse)
 async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     """Create verified working copies and permanent catalog evidence."""
@@ -623,6 +661,76 @@ async def api_intake_date_execute(req: IntakeDateRequest) -> ApiResponse:
         catalog_db, _timezone_name, _earliest, _mtime_sources = _date_settings()
         plans, failures = _plan_date_batches(req.batch_ids)
         results = [execute_dates(plan, catalog_db=catalog_db) for plan in plans]
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            "complete": not failures and all(not result["failed"] for result in results),
+            "results": results,
+            "failures": failures,
+        },
+    )
+
+
+def _plan_gps_batches(batch_ids: list[str]) -> tuple[list[Any], list[dict[str, str]]]:
+    catalog_db, timezone_name, mappings, max_minutes, _folder_tag = _gps_settings()
+    plans = []
+    failures: list[dict[str, str]] = []
+    seen_sha256: set[str] = set()
+    for batch_id in list(dict.fromkeys(batch_ids)):
+        try:
+            plan = plan_gps(
+                batch_id,
+                catalog_db=catalog_db,
+                timezone_name=timezone_name,
+                mappings=mappings,
+                max_minutes=max_minutes,
+            )
+            unique_items = []
+            for item in plan.items:
+                if item.sha256 in seen_sha256:
+                    continue
+                seen_sha256.add(item.sha256)
+                unique_items.append(item)
+            plan.items[:] = unique_items
+            plans.append(plan)
+        except (KeyError, OSError, RuntimeError, ValueError) as error:
+            failures.append({"batch_id": batch_id, "error": str(error)})
+    return plans, failures
+
+
+@router.post("/intake/enrich/gps/plan", response_model=ApiResponse)
+async def api_intake_gps_plan(req: IntakeGpsRequest) -> ApiResponse:
+    """Return conservative GPS decisions without modifying media."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    try:
+        plans, failures = _plan_gps_batches(req.batch_ids)
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            "complete": not failures,
+            "plans": [plan.to_dict() for plan in plans],
+            "failures": failures,
+        },
+    )
+
+
+@router.post("/intake/enrich/gps/execute", response_model=ApiResponse)
+async def api_intake_gps_execute(req: IntakeGpsRequest) -> ApiResponse:
+    """Execute freshly recomputed, catalog-scoped GPS plans."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    try:
+        catalog_db, _timezone, _mappings, _minutes, folder_tag = _gps_settings()
+        plans, failures = _plan_gps_batches(req.batch_ids)
+        results = [
+            execute_gps(plan, catalog_db=catalog_db, folder_name_as_tag=folder_tag)
+            for plan in plans
+        ]
     except (OSError, RuntimeError, ValueError) as error:
         return ApiResponse(ok=False, error=str(error))
     return ApiResponse(

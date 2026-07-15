@@ -24,6 +24,11 @@ GPS 只允許兩種寫入來源:
    - 寫入時加 keywords `phoxif:gps-estimated`、`phoxif:gps-src:temporal-neighbor`,
      catalog 記參照檔 sha256 與時間差。
 
+所有 GPS 補值都寫 `phoxif:gps-backfilled` 與來源標記。人工映射另寫
+`phoxif:gps-user-confirmed`;時間鄰近才寫 `phoxif:gps-estimated`。圖片同時
+寫 IPTC Keywords + XMP Subject；MP4/MOV 不支援 legacy IPTC IIM，改以
+`Keys:GPSCoordinates` + XMP Subject 保存座標與溯源。
+
 **明確禁止**:
 
 - 對 WeChat/LINE 轉存檔(日期為估計者)做任何 GPS 自動推斷。

@@ -211,3 +211,48 @@ def test_quicktime_date_uses_explicit_timezone_and_keeps_xmp_provenance(
     assert local["QuickTime:CreateDate"].startswith("2024:01:15 10:00:00")
     assert local["XMP-dc:Subject"] == keywords
     assert utc["QuickTime:CreateDate"].startswith("2024:01:15 20:00:00")
+
+
+def test_quicktime_gps_coordinates_are_verified_with_xmp_provenance(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    video = tmp_path / "located.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=32x32:d=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            str(video),
+        ],
+        check=True,
+    )
+    keywords = ["phoxif:gps-backfilled", "phoxif:gps-src:folder-mapping"]
+
+    write_tags(
+        video,
+        {
+            "Keys:GPSCoordinates": "+20.50000000-30.25000000/",
+            "XMP-dc:Subject": keywords,
+        },
+        numeric=True,
+    )
+
+    tags = read_tags(
+        video,
+        ["Keys:GPSCoordinates", "XMP-dc:Subject"],
+        numeric=True,
+    )
+    assert tags["Keys:GPSCoordinates"].startswith("20.5 -30.25")
+    assert tags["XMP-dc:Subject"] == keywords

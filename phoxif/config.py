@@ -73,6 +73,7 @@ def load_config(
         "default_timezone": raw.get("default_timezone", "Asia/Taipei"),
         "date_earliest": raw.get("date_earliest", "1995-01-01"),
         "date_mtime_source_ids": set(raw.get("date_mtime_source_ids", [])),
+        "gps_neighbor_max_minutes": int(raw.get("gps_neighbor_max_minutes", 30)),
         "folder_name_as_tag": bool(raw.get("folder_name_as_tag", False)),
         "dedupe_auto_threshold": int(raw.get("dedupe_auto_threshold", 4)),
         "dedupe_review_threshold": int(raw.get("dedupe_review_threshold", 10)),

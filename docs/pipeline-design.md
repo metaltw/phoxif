@@ -333,6 +333,9 @@ mtime 換成 temp 的——**寫入完成後必須 `os.utime` 還原原 mtime**
   且同 source 同資料夾、時間差 ≤ 30 min、鄰居本身 GPS 非估計值;
   兩側鄰居距離 > 1km 時落空(移動中不內插)。
 - 寫入帶 `phoxif:gps-estimated` 標記;operations 記參照檔。
+- 全部補值帶 `phoxif:gps-backfilled` + source 標記；人工映射另帶
+  `phoxif:gps-user-confirmed`，只有 temporal neighbor 帶 estimated。
+  圖片寫標準 EXIF GPS + IPTC/XMP；影片寫 `Keys:GPSCoordinates` + XMP。
 - **位置資料夾的保存**(新決策點,見 §13):來源資料夾名(如
   `City_A/`)在 ingest 已存於 sighting 證據;若該夾在 gps_locations
   有映射 → 走來源 1 寫 GPS。資料夾名本身可選擇性寫入 keyword
