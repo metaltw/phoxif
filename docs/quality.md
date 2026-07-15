@@ -22,24 +22,24 @@ grep 靜默假通過——2026-07-07 verifier 實證過的坑):
 
 ```bash
 # G1a EXIF 安全(ADR-0006)— 新程式區,P0-4 完成後必須為空(基線 4:actions.py)
-grep -rn 'overwrite_original' phoxif/api/ | grep -v 'exif_writer'
+grep -rnI 'overwrite_original' phoxif/api/ | grep -v 'exif_writer'
 
 # G1b EXIF 安全 — 全 repo 盤點,基線 8,只准變少、禁止新增
 #   組成:api/actions.py 4 處(P0-4 歸零)+ legacy convert.py:108,127,138
 #  (寫自產轉檔輸出,非使用者原檔)+ write_gps.py:66(寫使用者原檔,
 #   ADR-0007 Phase 3 吸收時歸零)
-grep -rn 'overwrite_original' phoxif/ | grep -v 'api/exif_writer' | wc -l
+grep -rnI 'overwrite_original' phoxif/ | grep -v 'api/exif_writer' | wc -l
 
 # G2 永久刪除 — 基線 3 命中:convert.py:167 與 sorter.py:401(使用者檔案,
 #   P0-1/P0-2 修復對象,修完歸零)+ convert.py:101(自產失敗輸出清理,允許)。
 #   不得新增使用者檔案命中。注意:這是啟發式(抓不到 unlink(missing_ok=True)
 #   等變體);紅線是「使用者檔案一律 send2trash」這條規則,不是這條 regex
-grep -rnE '(os\.remove|\.unlink\(\)|rmtree)' phoxif/
+grep -rnIE '(os\.remove|\.unlink\(\)|rmtree)' phoxif/
 
 # G3 個資 — 輸出必須為空(個人路徑/座標/主機只准進 gitignored config.yaml)。
 #   本檔(docs/quality.md)因含指令文字而自我排除,故本檔內禁止出現真實個資,
 #   review 時人工過目
-grep -rnE '/Users/|/Volumes/|@gmail|100\.[0-9]+\.' \
+grep -rnIE '/Users/|/Volumes/|@gmail|100\.[0-9]+\.' \
   --include='*.py' --include='*.md' --include='*.ts' --include='*.tsx' \
   --include='*.yaml' . | grep -v -e .venv -e node_modules -e config.yaml \
   -e docs/quality.md

@@ -4,10 +4,8 @@ Launch the web UI or run in server-only mode.
 """
 
 import argparse
-import sys
 import threading
 import webbrowser
-from pathlib import Path
 
 import uvicorn
 

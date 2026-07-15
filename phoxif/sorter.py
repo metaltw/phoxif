@@ -1,4 +1,4 @@
-"""Local web UI for previewing and sorting Unknown photos/videos by location.
+"""DEPRECATED: Local web UI for sorting Unknown media by location.
 
 Serves a browser-based interface to manually classify files that could not
 be automatically organized by GPS metadata.
@@ -10,10 +10,13 @@ Usage:
 import argparse
 import json
 import subprocess
+import sys
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any
+
+from send2trash import send2trash
 
 from phoxif.config import load_config
 
@@ -398,8 +401,8 @@ class SorterHandler(SimpleHTTPRequestHandler):
                 elif action == "delete":
                     src = _unknown_dir / filename
                     if src.exists():
-                        src.unlink()
-                    self._json({"ok": True, "msg": f"Deleted {filename}"})
+                        send2trash(str(src))
+                    self._json({"ok": True, "msg": f"Moved to Trash: {filename}"})
 
                 else:
                     self._json({"ok": False, "msg": f"Unknown action: {action}"})
@@ -423,6 +426,11 @@ class SorterHandler(SimpleHTTPRequestHandler):
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the photo sorter web UI."""
     global _base_dir, _unknown_dir, _thumb_dir, _preview_dir
+
+    print(
+        "WARNING: phoxif.sorter is DEPRECATED; use the main phoxif GUI instead.",
+        file=sys.stderr,
+    )
 
     parser = argparse.ArgumentParser(
         description="Web UI for sorting Unknown photos/videos."

@@ -1,10 +1,7 @@
 """Execute operations — trash, rename, and other file actions."""
 
-import logging
 import os
 import shutil
-import subprocess
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,16 +9,7 @@ from typing import Any
 from send2trash import send2trash
 
 from phoxif.api.logger import OperationLogger
-
-_logger = logging.getLogger(__name__)
-
-# File type sets for rotation strategy dispatch
-_JPEG_EXTS = {".jpg", ".jpeg"}
-_VIDEO_EXTS = {".mov", ".mp4", ".avi", ".mkv", ".m4v"}
-_PILLOW_EXTS = {".heic", ".png", ".tiff", ".tif", ".webp", ".bmp"}
-
-# jpegtran path (Homebrew on macOS)
-_JPEGTRAN = "/opt/homebrew/bin/jpegtran"
+from phoxif.api.exif_writer import SafeEditError, write_tags
 
 
 def trash_files(
@@ -175,6 +163,7 @@ def fix_orientation(
     """
     success: list[str] = []
     failed: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
 
     for item in file_paths:
         path_str = item["path"]
@@ -185,174 +174,69 @@ def fix_orientation(
             failed.append({"path": path_str, "error": "File not found"})
             continue
 
+        operation: dict[str, Any] | None = None
+        edit_applied = False
         try:
-            result = subprocess.run(
-                ["exiftool", "-Orientation=1", "-n", "-overwrite_original", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                failed.append({"path": path_str, "error": result.stderr.strip()})
-                continue
-
-            logger.log_operation(
+            operation = logger.log_operation(
                 op_type="ORIENTATION",
                 file=str(path),
                 old_value=str(old_orientation),
                 new_value="1",
-                detail=f"Orientation fixed: {old_orientation} → 1 for {path.name}",
+                detail=f"Pending orientation fix for {path.name}",
+                status="pending",
             )
+            logger.save()
+            old_values = write_tags(path, {"Orientation": 1}, numeric=True)
+            edit_applied = True
+            operation["old_value"] = str(old_values.get("Orientation") or old_orientation)
+            try:
+                logger.mark_operation(
+                    operation,
+                    "completed",
+                    detail=f"Orientation fixed: {old_orientation} → 1 for {path.name}",
+                )
+            except OSError as log_error:
+                warnings.append(
+                    {
+                        "path": path_str,
+                        "warning": (
+                            "Edit applied; completion log remains pending: "
+                            f"{log_error}"
+                        ),
+                    }
+                )
             success.append(path_str)
-        except subprocess.TimeoutExpired:
-            failed.append({"path": path_str, "error": "exiftool timed out"})
-        except FileNotFoundError:
-            failed.append({"path": path_str, "error": "exiftool not found"})
-        except Exception as e:
+        except (FileNotFoundError, SafeEditError, OSError) as e:
+            if operation is not None and not edit_applied:
+                try:
+                    logger.mark_operation(
+                        operation,
+                        "failed",
+                        detail=f"Orientation fix failed: {e}",
+                    )
+                except OSError:
+                    pass
             failed.append({"path": path_str, "error": str(e)})
 
     return {
         "success": success,
         "failed": failed,
+        "warnings": warnings,
         "count": len(success),
     }
-
-
-def _rotate_jpeg(path: Path, rotation: int) -> None:
-    """Losslessly rotate a JPEG using jpegtran, then reset EXIF Orientation.
-
-    Args:
-        path: Path to the JPEG file.
-        rotation: Degrees CW (90, 180, 270).
-
-    Raises:
-        RuntimeError: If jpegtran or exiftool fails.
-    """
-    with tempfile.NamedTemporaryFile(
-        suffix=".jpg", dir=path.parent, delete=False
-    ) as tmp:
-        tmp_path = Path(tmp.name)
-
-    try:
-        result = subprocess.run(
-            [
-                _JPEGTRAN,
-                "-rotate",
-                str(rotation),
-                "-copy",
-                "all",
-                "-perfect",
-                "-outfile",
-                str(tmp_path),
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"jpegtran failed: {result.stderr.strip()}")
-
-        # Replace original with rotated version
-        tmp_path.replace(path)
-
-        # Reset EXIF Orientation to 1 (Normal)
-        result = subprocess.run(
-            ["exiftool", "-Orientation=1", "-n", "-overwrite_original", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            _logger.warning(
-                "Failed to reset EXIF orientation for %s: %s",
-                path,
-                result.stderr.strip(),
-            )
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-
-def _rotate_pillow(path: Path, rotation: int) -> None:
-    """Rotate an image using Pillow, then reset EXIF Orientation if supported.
-
-    Args:
-        path: Path to the image file.
-        rotation: Degrees CW (90, 180, 270).
-
-    Raises:
-        RuntimeError: If rotation or save fails.
-    """
-    from PIL import Image
-
-    # PIL transpose constants: ROTATE_90 = 90° CCW, ROTATE_270 = 90° CW
-    transpose_map = {
-        90: Image.Transpose.ROTATE_270,  # 90° CW
-        180: Image.Transpose.ROTATE_180,  # 180°
-        270: Image.Transpose.ROTATE_90,  # 270° CW (= 90° CCW)
-    }
-    transpose_op = transpose_map.get(rotation)
-    if transpose_op is None:
-        raise RuntimeError(f"Invalid rotation for Pillow: {rotation}")
-
-    ext = path.suffix.lower()
-
-    with Image.open(path) as img:
-        fmt = img.format
-        rotated = img.transpose(transpose_op)
-        rotated.save(path, format=fmt)
-
-    # Reset EXIF Orientation for formats that support it
-    if ext in {".heic", ".tiff", ".tif", ".webp"}:
-        subprocess.run(
-            ["exiftool", "-Orientation=1", "-n", "-overwrite_original", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-
-def _rotate_video_metadata(path: Path, rotation: int) -> None:
-    """Set rotation metadata on a video file without re-encoding.
-
-    Args:
-        path: Path to the video file.
-        rotation: Degrees CW (90, 180, 270).
-
-    Raises:
-        RuntimeError: If exiftool fails.
-    """
-    result = subprocess.run(
-        [
-            "exiftool",
-            f"-Rotation={rotation}",
-            "-overwrite_original",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"exiftool failed: {result.stderr.strip()}")
 
 
 def auto_rotate(
     file_items: list[dict[str, Any]],
     logger: OperationLogger,
 ) -> dict[str, Any]:
-    """Auto-rotate images and videos based on AI-detected orientation.
-
-    Strategy per file type:
-    - JPEG: lossless rotation via jpegtran + EXIF reset
-    - Other images (HEIC, PNG, TIFF, WebP, BMP): Pillow transpose + EXIF reset
-    - Video: metadata-only rotation via exiftool (no re-encode)
+    """Refuse pixel rotation until a byte-safe undo design is available.
 
     Args:
         file_items: List of dicts with keys:
             - path: Absolute file path.
             - rotation: Degrees to rotate CW (90, 180, 270).
-        logger: Operation logger for undo support.
+        logger: Reserved for the future reversible implementation.
 
     Returns:
         Dict with keys:
@@ -360,63 +244,15 @@ def auto_rotate(
         - failed: List of {path, error} for failures.
         - count: Number of files rotated.
     """
-    success: list[str] = []
-    failed: list[dict[str, str]] = []
-
-    for item in file_items:
-        path_str = item["path"]
-        rotation = item["rotation"]
-        path = Path(path_str)
-
-        if not path.exists():
-            failed.append({"path": path_str, "error": "File not found"})
-            continue
-
-        if rotation not in (90, 180, 270):
-            failed.append({"path": path_str, "error": f"Invalid rotation: {rotation}"})
-            continue
-
-        ext = path.suffix.lower()
-
-        try:
-            # Preserve original modification time
-            stat = path.stat()
-            orig_mtime = stat.st_mtime
-
-            if ext in _JPEG_EXTS:
-                _rotate_jpeg(path, rotation)
-            elif ext in _PILLOW_EXTS:
-                _rotate_pillow(path, rotation)
-            elif ext in _VIDEO_EXTS:
-                _rotate_video_metadata(path, rotation)
-            else:
-                failed.append({"path": path_str, "error": f"Unsupported format: {ext}"})
-                continue
-
-            # Restore original modification time
-            os.utime(path, (stat.st_atime, orig_mtime))
-
-            logger.log_operation(
-                op_type="ORIENTATION",
-                file=str(path),
-                old_value="1",
-                new_value=f"rotated {rotation}°",
-                detail=f"Auto-rotated {rotation}° CW: {path.name}",
-            )
-            success.append(path_str)
-        except subprocess.TimeoutExpired:
-            failed.append({"path": path_str, "error": "Command timed out"})
-        except FileNotFoundError as e:
-            failed.append({"path": path_str, "error": f"Tool not found: {e}"})
-        except RuntimeError as e:
-            failed.append({"path": path_str, "error": str(e)})
-        except Exception as e:
-            failed.append({"path": path_str, "error": str(e)})
-
+    del logger
+    error = (
+        "Temporarily unavailable: pixel rotation is disabled until its undo "
+        "can restore the original file safely"
+    )
     return {
-        "success": success,
-        "failed": failed,
-        "count": len(success),
+        "success": [],
+        "failed": [{"path": item.get("path", ""), "error": error} for item in file_items],
+        "count": 0,
     }
 
 

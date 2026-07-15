@@ -1,7 +1,8 @@
 """Operation logger for phoxif — session-based undo support."""
 
 import json
-import subprocess
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,8 @@ class OperationLogger:
         old_value: str | None = None,
         new_value: str | None = None,
         detail: str = "",
-    ) -> None:
+        status: str = "completed",
+    ) -> dict[str, Any]:
         """Append an operation to the current session.
 
         Args:
@@ -84,26 +86,65 @@ class OperationLogger:
             old_value: Previous value (for undo).
             new_value: New value after operation.
             detail: Human-readable description.
+            status: ``pending``, ``completed``, or ``failed``.
+
+        Returns:
+            Mutable operation record for write-ahead completion updates.
         """
         if self._current_session is None:
             self.start_session()
 
         assert self._current_session is not None
-        self._current_session["operations"].append(
-            {
-                "type": op_type,
-                "file": file,
-                "old_value": old_value,
-                "new_value": new_value,
-                "detail": detail,
-            }
-        )
+        operation = {
+            "type": op_type,
+            "file": file,
+            "old_value": old_value,
+            "new_value": new_value,
+            "detail": detail,
+            "status": status,
+        }
+        self._current_session["operations"].append(operation)
+        return operation
+
+    def mark_operation(
+        self,
+        operation: dict[str, Any],
+        status: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        """Persist a write-ahead operation status transition."""
+        if status not in {"pending", "completed", "failed"}:
+            raise ValueError(f"Invalid operation status: {status}")
+        previous_status = operation.get("status")
+        previous_detail = operation.get("detail")
+        operation["status"] = status
+        if detail is not None:
+            operation["detail"] = detail
+        try:
+            self.save()
+        except OSError:
+            operation["status"] = previous_status
+            operation["detail"] = previous_detail
+            raise
 
     def save(self) -> None:
-        """Write log to disk."""
+        """Atomically write the operation log to disk."""
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.log_path, "w") as f:
-            json.dump(self.sessions, f, indent=2, ensure_ascii=False)
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=".phoxif-log-",
+            suffix=".json",
+            dir=self.log_path.parent,
+        )
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(descriptor, "w") as file_handle:
+                json.dump(self.sessions, file_handle, indent=2, ensure_ascii=False)
+                file_handle.flush()
+                os.fsync(file_handle.fileno())
+            os.replace(temp_path, self.log_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def get_sessions(self) -> list[dict[str, Any]]:
         """Return all sessions.
@@ -135,13 +176,33 @@ class OperationLogger:
 
         results: list[dict[str, Any]] = []
 
-        # Undo in reverse order
+        # Undo in reverse order, checkpointing each operation so partial success
+        # can be retried without reapplying already completed work.
         for op in reversed(session["operations"]):
+            if op.get("undo_status") == "completed":
+                result = {
+                    "op": op,
+                    "success": True,
+                    "detail": op.get("undo_detail", "Already restored"),
+                }
+                results.append(result)
+                continue
+
+            op["undo_status"] = "pending"
+            op["undo_attempted_at"] = datetime.now(timezone.utc).isoformat()
+            self.save()
             result = self._undo_operation(op)
+            op["undo_status"] = "completed" if result["success"] else "failed"
+            op["undo_detail"] = result["detail"]
+            if result["success"]:
+                op["undone_at"] = datetime.now(timezone.utc).isoformat()
+            self.save()
             results.append(result)
 
-        session["undone"] = True
-        session["undone_at"] = datetime.now(timezone.utc).isoformat()
+        all_succeeded = all(result["success"] for result in results)
+        session["undone"] = all_succeeded
+        timestamp_key = "undone_at" if all_succeeded else "undo_attempted_at"
+        session[timestamp_key] = datetime.now(timezone.utc).isoformat()
         self.save()
         return results
 
@@ -156,6 +217,13 @@ class OperationLogger:
         """
         op_type = op["type"]
         file_path = op["file"]
+
+        if op.get("status", "completed") == "failed":
+            return {
+                "op": op,
+                "success": True,
+                "detail": "Operation was not applied; nothing to undo",
+            }
 
         try:
             if op_type == "TRASH":
@@ -178,6 +246,12 @@ class OperationLogger:
                         "success": True,
                         "detail": f"Renamed back: {new_path.name} → {old_path.name}",
                     }
+                if old_path.exists():
+                    return {
+                        "op": op,
+                        "success": True,
+                        "detail": f"Already renamed back: {old_path.name}",
+                    }
                 else:
                     return {
                         "op": op,
@@ -186,28 +260,30 @@ class OperationLogger:
                     }
 
             elif op_type == "GPS":
+                from phoxif.api.exif_writer import write_tags
+
                 # Write back old GPS value via exiftool
                 old_val = op["old_value"]
                 if old_val:
                     # old_value format: "lat,lon"
                     lat, lon = old_val.split(",")
-                    cmd = [
-                        "exiftool",
-                        f"-GPSLatitude={lat.strip()}",
-                        f"-GPSLongitude={lon.strip()}",
-                        file_path,
-                    ]
+                    latitude = float(lat.strip())
+                    longitude = float(lon.strip())
+                    tags = {
+                        "GPSLatitude": latitude,
+                        "GPSLatitudeRef": "S" if latitude < 0 else "N",
+                        "GPSLongitude": longitude,
+                        "GPSLongitudeRef": "W" if longitude < 0 else "E",
+                    }
                 else:
                     # Remove GPS tags
-                    cmd = [
-                        "exiftool",
-                        "-GPSLatitude=",
-                        "-GPSLongitude=",
-                        "-GPSLatitudeRef=",
-                        "-GPSLongitudeRef=",
-                        file_path,
-                    ]
-                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    tags = {
+                        "GPSLatitude": "",
+                        "GPSLongitude": "",
+                        "GPSLatitudeRef": "",
+                        "GPSLongitudeRef": "",
+                    }
+                write_tags(Path(file_path), tags, numeric=True)
                 return {
                     "op": op,
                     "success": True,
@@ -215,15 +291,15 @@ class OperationLogger:
                 }
 
             elif op_type == "ORIENTATION":
+                from phoxif.api.exif_writer import write_tags
+
                 old_val = op["old_value"]
                 if old_val:
-                    cmd = [
-                        "exiftool",
-                        f"-Orientation={old_val}",
-                        "-n",
-                        file_path,
-                    ]
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    write_tags(
+                        Path(file_path),
+                        {"Orientation": int(old_val)},
+                        numeric=True,
+                    )
                     return {
                         "op": op,
                         "success": True,
@@ -277,8 +353,8 @@ class OperationLogger:
                     }
                 return {
                     "op": op,
-                    "success": False,
-                    "detail": "Converted file not found",
+                    "success": True,
+                    "detail": "Converted file is already absent",
                 }
 
             else:
