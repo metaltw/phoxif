@@ -53,6 +53,21 @@ def test_normalize_file_info_falls_back_to_filemodifydate():
     assert _normalize_file_info(raw)["date"] == "2024:01:17 00:00:00"
 
 
+def test_normalize_file_info_surfaces_live_photo_identity_aliases():
+    assert (
+        _normalize_file_info({"SourceFile": "/tmp/a.heic", "ContentIdentifier": "live-123"})[
+            "live_content_id"
+        ]
+        == "live-123"
+    )
+    assert (
+        _normalize_file_info({"SourceFile": "/tmp/a.mov", "MediaGroupUUID": "live-456"})[
+            "live_content_id"
+        ]
+        == "live-456"
+    )
+
+
 def test_scan_folder_date_priority_via_real_exiftool(make_jpeg, tmp_path: Path):
     """Integration: scan_folder must surface DateTimeOriginal over CreateDate."""
     make_jpeg(

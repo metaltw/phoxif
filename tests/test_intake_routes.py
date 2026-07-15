@@ -69,6 +69,8 @@ def test_intake_ingest_aggregates_unique_sources(monkeypatch, tmp_path: Path) ->
         "staged_files": 2,
         "verified_staging": 4,
         "phash_failures": 0,
+        "sidecars": 0,
+        "staged_sidecars": 0,
         "total_bytes": 200,
     }
 
@@ -155,18 +157,14 @@ def test_intake_dedupe_reports_results_and_batch_failures(monkeypatch, tmp_path:
     monkeypatch.setattr(routes, "run_dedupe", fake_dedupe)
     response = asyncio.run(
         routes.api_intake_dedupe(
-            routes.IntakeDedupeRequest(
-                batch_ids=["good-batch", "good-batch", "failed-batch"]
-            )
+            routes.IntakeDedupeRequest(batch_ids=["good-batch", "good-batch", "failed-batch"])
         )
     )
 
     assert response.ok is True
     assert response.data["complete"] is False
     assert [result["batch_id"] for result in response.data["results"]] == ["good-batch"]
-    assert response.data["failures"] == [
-        {"batch_id": "failed-batch", "error": "dedupe failed"}
-    ]
+    assert response.data["failures"] == [{"batch_id": "failed-batch", "error": "dedupe failed"}]
 
 
 def test_dedupe_resolve_forwards_explicit_decision(monkeypatch, tmp_path: Path) -> None:
@@ -211,9 +209,7 @@ def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: 
     fake_item = SimpleNamespace(to_dict=lambda: {"operation_id": 7, "paths": ["photo.jpg"]})
     monkeypatch.setattr(routes, "pending_pipeline_trash", lambda *_args, **_kwargs: [fake_item])
     pending_response = asyncio.run(
-        routes.api_pipeline_trash_pending(
-            routes.PipelineTrashPendingRequest(batch_ids=["batch-1"])
-        )
+        routes.api_pipeline_trash_pending(routes.PipelineTrashPendingRequest(batch_ids=["batch-1"]))
     )
     assert pending_response.ok is True
     assert pending_response.data["items"][0]["operation_id"] == 7
@@ -350,6 +346,94 @@ def test_gps_settings_reject_invalid_config_instead_of_using_defaults(
 
     with pytest.raises(ValueError, match="invalid GPS time window"):
         routes._gps_settings()
+
+
+def test_archive_routes_recompute_plan_and_require_explicit_approval(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_plan = SimpleNamespace(
+        to_dict=lambda: {
+            "batch_ids": ["batch-1"],
+            "items": [{"action": "archive", "relative_path": "2024/file.jpg"}],
+            "counts": {"archive": 1},
+            "total_bytes": 100,
+        }
+    )
+    plan_calls: list[list[str]] = []
+    execute_calls: list[bool] = []
+
+    def fake_plan_archive(batch_ids, *, catalog_db):
+        assert catalog_db == tmp_path / "catalog.db"
+        plan_calls.append(batch_ids)
+        return fake_plan
+
+    def fake_execute_archive(plan, *, catalog_db, archive_root, approved):
+        assert plan is fake_plan
+        assert catalog_db == tmp_path / "catalog.db"
+        assert archive_root == tmp_path / "library"
+        execute_calls.append(approved)
+        return {
+            "batch_ids": ["batch-1"],
+            "results": [],
+            "archived": 1,
+            "failed": 0,
+            "skipped": 0,
+            "snapshot_path": "_phoxif/catalog.db",
+            "snapshot_error": None,
+            "source_cleanup": "retained-pending-separate-approval",
+        }
+
+    monkeypatch.setattr(
+        routes,
+        "_archive_settings",
+        lambda: (tmp_path / "catalog.db", tmp_path / "library"),
+    )
+    monkeypatch.setattr(routes, "plan_archive", fake_plan_archive)
+    monkeypatch.setattr(routes, "execute_archive", fake_execute_archive)
+    monkeypatch.setattr(routes, "approval_fingerprint", lambda plan, root: "reviewed-plan")
+    monkeypatch.setattr(
+        routes,
+        "approval_matches",
+        lambda plan, root, fingerprint: fingerprint == "reviewed-plan",
+    )
+
+    preview = asyncio.run(
+        routes.api_intake_archive_plan(routes.IntakeArchiveRequest(batch_ids=["batch-1"]))
+    )
+    denied = asyncio.run(
+        routes.api_intake_archive_execute(
+            routes.IntakeArchiveExecuteRequest(
+                batch_ids=["batch-1"], plan_fingerprint="reviewed-plan", approved=False
+            )
+        )
+    )
+    executed = asyncio.run(
+        routes.api_intake_archive_execute(
+            routes.IntakeArchiveExecuteRequest(
+                batch_ids=["batch-1"],
+                plan_fingerprint="reviewed-plan",
+                approved=True,
+            )
+        )
+    )
+    changed = asyncio.run(
+        routes.api_intake_archive_execute(
+            routes.IntakeArchiveExecuteRequest(
+                batch_ids=["batch-1"], plan_fingerprint="stale-plan", approved=True
+            )
+        )
+    )
+
+    assert preview.ok is True
+    assert preview.data["archive_root"] == str(tmp_path / "library")
+    assert denied.ok is False
+    assert executed.ok is True
+    assert executed.data["complete"] is True
+    assert changed.ok is False
+    assert "changed since preview" in changed.error
+    assert plan_calls == [["batch-1"], ["batch-1"], ["batch-1"]]
+    assert execute_calls == [True]
 
 
 def test_thumbnail_allows_catalog_working_copy_but_not_arbitrary_file(

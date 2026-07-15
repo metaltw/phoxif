@@ -6,7 +6,7 @@
 
 | # | 決策 | 狀態 |
 |---|---|---|
-| [0001](0001-pipeline-stages.md) | 五階段管線,去重先於補值,歸檔後唯讀 | Accepted |
+| [0001](0001-pipeline-stages.md) | 保全優先；身分比對先行、清理晚於 metadata；歸檔後唯讀 | Accepted |
 | [0002](0002-catalog-sqlite.md) | SQLite catalog 作為跨機器管線脊椎 | Accepted |
 | [0003](0003-immich-external-library.md) | Immich 走 External Library,不用上傳 API | Accepted |
 | [0004](0004-date-backfill-provenance.md) | 日期補齊:盡量填 + 可逆標記 + 信心階梯 | Accepted |
@@ -15,6 +15,7 @@
 | [0007](0007-legacy-cli-disposition.md) | 四支 legacy CLI 的處置(凍結/修復/吸收) | Accepted |
 | [0008](0008-dual-mode-automation-policy.md) | 雙模式(救援+進水口)與自動化政策 | Accepted |
 | [0009](0009-stable-content-identity.md) | metadata 寫入後維持 ingest 身分與重掃批次成員 | Accepted |
+| [0010](0010-archive-preservation-contract.md) | 歸檔、Live Photo/AAE、來源邊界與快照安全契約 | Accepted |
 
 ## 格式
 

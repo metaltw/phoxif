@@ -1,6 +1,6 @@
 # phoxif 管線詳細設計(v2,2026-07-14)
 
-正史文件。上游決策:`docs/adr/0001–0008`(本設計是其實作規格,不重複論證)。
+正史文件。上游決策:`docs/adr/0001–0010`(本設計是其實作規格,不重複論證)。
 路線:`docs/roadmap.md`。驗收:`docs/quality.md`。
 設計輸入(2026-07-14 Metal 訪談):總量 < 5 萬檔;**救援 + 長期進水口雙模式**;
 人工只審「低信心 + 破壞性」;實檔普查證據見
@@ -133,6 +133,8 @@ CREATE INDEX idx_sightings_sha ON sightings(sha256);
 後續 schema 由 migration 演進：0002 新增 `files.current_sha256/current_size`
 追蹤 metadata 寫入後的工作檔 bytes；0003 新增
 `batch_items(batch_id, sighting_id)`，保存每次重掃的 batch membership。
+0004 新增 `collection_class/non_photo_category/live_content_id` 與 AAE sidecar
+表；0005 新增 `sources.root_path`，讓歸檔時可拒絕收藏庫與來源樹任一方向重疊。
 `files.sha256` 始終是不可變 ingest 身分(ADR-0009)。
 
 證據欄位(sightings 的 original_*)寫入後唯讀——程式不提供 UPDATE 路徑。
@@ -351,7 +353,12 @@ mtime 換成 temp 的——**寫入完成後必須 `os.utime` 還原原 mtime**
   中文資訊走 EXIF/keyword(UTF-8,在檔案內部,不受路徑正規化影響)。
 - 流程:`plan()`(dry-run 清單:src staging → dst 相對路徑)→ Metal 批准
   → `execute()`:複製(保 mtime)→ 讀回 sha256 校驗 → catalog 標
-  `archived` + operations 記錄 → 清 staging 複本。
+  `archived` + operations 記錄 → 產 catalog 快照。來源與 staging 先保留，
+  任何清理都是另一個明確批准的工作。
+- archive root 必須有 `.phoxif-archive-root` sentinel，且不得與 source root、
+  staging 或 catalog 互相包含；容量預檢以 SQLite page count 計入 WAL。
+- Live Photo 影像/影片與 AAE 以同 basename 成組發布；任一成員失敗，catalog
+  不得把部分成員標成已完成。非照片進 `_non_photos/<category>/`，仍可尋回。
 - 冪等:已有 archived_path 的 File 跳過;execute 中斷重跑安全
   (逐檔 commit)。
 - Immich:external library 定期 scan 自然吸收;phoxif 不呼叫 API。
@@ -375,8 +382,9 @@ mtime 換成 temp 的——**寫入完成後必須 `os.utime` 還原原 mtime**
 | 歸檔到 NAS | — | — | **plan 過目後批准**(動前必問) |
 | 重逢(inbox 遇已歸檔) | ✔ 標 duplicate | — | 併入待刪批次 |
 
-原則:**寫入型動作(可逆,有標記+原值)自動;刪除型動作(半可逆)批次
-批准;NAS 寫入(生產環境)逐 plan 批准**。「摘要清單」= Done 畫面上
+原則:**保全與可尋回性優先於 metadata；metadata 優先於去重清理；非照片
+清理最後**。寫入型動作(可逆,有標記+原值)可自動；刪除型動作(半可逆)
+在日期/GPS 後批次批准；NAS 寫入(生產環境)逐 plan 批准。「摘要清單」= Done 畫面上
 可展開的分類統計 + 可點入抽查,不阻塞流程。
 
 ## 11. GUI delta(Phase 5 前的最小改動)

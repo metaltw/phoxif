@@ -49,17 +49,13 @@ def load_config(
         raise ValueError("Config missing required field: base_dir")
 
     # Normalize types
-    effective_base_dir = (
-        base_dir_override if base_dir_override else raw.get("base_dir", ".")
-    )
+    effective_base_dir = base_dir_override if base_dir_override else raw.get("base_dir", ".")
     config: dict[str, Any] = {
         "base_dir": Path(effective_base_dir),
         "extensions": set(
             raw.get("extensions", [".jpg", ".jpeg", ".heic", ".png", ".mov", ".mp4"])
         ),
-        "nominatim_url": raw.get(
-            "nominatim_url", "https://nominatim.openstreetmap.org/reverse"
-        ),
+        "nominatim_url": raw.get("nominatim_url", "https://nominatim.openstreetmap.org/reverse"),
         "geocache_file": raw.get("geocache_file", ".geocache.json"),
         "sorter_port": raw.get("sorter_port", 8899),
         "skip_dirs": set(
@@ -67,9 +63,10 @@ def load_config(
         ),
         "catalog_db": Path(raw.get("catalog_db", "~/.phoxif/catalog.db")).expanduser(),
         "staging_dir": Path(raw.get("staging_dir", "~/.phoxif/staging")).expanduser(),
-        "inbox_sources": [
-            Path(source).expanduser() for source in raw.get("inbox_sources", [])
-        ],
+        "archive_root": (
+            Path(str(raw["archive_root"])).expanduser() if raw.get("archive_root") else None
+        ),
+        "inbox_sources": [Path(source).expanduser() for source in raw.get("inbox_sources", [])],
         "default_timezone": raw.get("default_timezone", "Asia/Taipei"),
         "date_earliest": raw.get("date_earliest", "1995-01-01"),
         "date_mtime_source_ids": set(raw.get("date_mtime_source_ids", [])),
@@ -81,9 +78,7 @@ def load_config(
 
     # Parse GPS locations: {"Name": {"lat": x, "lon": y}} → {"Name": (lat, lon)}
     gps_raw = raw.get("gps_locations", {})
-    config["gps_locations"] = {
-        name: (loc["lat"], loc["lon"]) for name, loc in gps_raw.items()
-    }
+    config["gps_locations"] = {name: (loc["lat"], loc["lon"]) for name, loc in gps_raw.items()}
 
     # HEVC settings with defaults
     hevc_raw = raw.get("hevc", {})

@@ -1,6 +1,8 @@
 # phoxif Roadmap(2026-07-07 定版;2026-07-14 依詳細設計校準)
 
-排序依 Metal 訪談:①跨電腦收集與去重 ②WeChat/LINE 日期/GPS 補齊。
+產品優先序依 Metal 2026-07-15 定案：①照片存在且可尋回 ②拍攝日期/GPS
+③重複整理 ④垃圾圖／非照片。技術管線可先做非破壞性的內容身分比對，
+但使用者不應在 metadata 前被迫清理或刪除。
 管線順序與各項決策見 `docs/adr/`(Accepted ADR 是約束);
 **實作規格見 `docs/pipeline-design.md`**(DDL、介面簽名、政策矩陣、閥值)。
 每階段交付「後端模組 + 測試」先行,GUI 接線隨後;驗收指令見 `docs/quality.md`。

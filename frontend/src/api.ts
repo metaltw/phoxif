@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupeResolution, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import type { ArchiveExecutionSummary, ArchivePlanSummary, ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupeResolution, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -261,6 +261,23 @@ export async function executeGps(batchIds: string[]): Promise<GpsExecutionSummar
   return request<GpsExecutionSummary>('/intake/enrich/gps/execute', {
     method: 'POST',
     body: JSON.stringify({ batch_ids: batchIds }),
+  });
+}
+
+export async function planArchive(batchIds: string[]): Promise<ArchivePlanSummary> {
+  return request<ArchivePlanSummary>('/intake/archive/plan', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds }),
+  });
+}
+
+export async function executeArchive(
+  batchIds: string[],
+  planFingerprint: string,
+): Promise<ArchiveExecutionSummary> {
+  return request<ArchiveExecutionSummary>('/intake/archive/execute', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds, plan_fingerprint: planFingerprint, approved: true }),
   });
 }
 

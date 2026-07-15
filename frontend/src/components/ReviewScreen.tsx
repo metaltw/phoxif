@@ -1,5 +1,5 @@
-import React from 'react';
-import type { DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, GpsExecutionSummary, GpsPlanSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
+import React, { useEffect, useState } from 'react';
+import type { ArchiveExecutionSummary, ArchivePlanSummary, DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, GpsExecutionSummary, GpsPlanSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
@@ -21,6 +21,10 @@ interface ReviewScreenProps {
   gpsExecution: GpsExecutionSummary | null;
   gpsing: boolean;
   gpsError: string | null;
+  archivePlan: ArchivePlanSummary | null;
+  archiveExecution: ArchiveExecutionSummary | null;
+  archiving: boolean;
+  archiveError: string | null;
   onIngest: () => void;
   onDedupe: () => void;
   onResolvePair: (batchId: string, pair: DedupePair, keepSha256: string | null) => void;
@@ -29,6 +33,8 @@ interface ReviewScreenProps {
   onDateExecute: () => void;
   onGpsPlan: () => void;
   onGpsExecute: () => void;
+  onArchivePlan: () => void;
+  onArchiveExecute: () => void;
   onReset: () => void;
   formatSize: (bytes: number) => string;
 }
@@ -53,6 +59,10 @@ export function ReviewScreen({
   gpsExecution,
   gpsing,
   gpsError,
+  archivePlan,
+  archiveExecution,
+  archiving,
+  archiveError,
   onIngest,
   onDedupe,
   onResolvePair,
@@ -61,9 +71,15 @@ export function ReviewScreen({
   onDateExecute,
   onGpsPlan,
   onGpsExecute,
+  onArchivePlan,
+  onArchiveExecute,
   onReset,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
+  const [archiveConfirmed, setArchiveConfirmed] = useState(false);
+  useEffect(() => {
+    setArchiveConfirmed(false);
+  }, [archivePlan?.plan_fingerprint]);
   const ingestFailed = ingestSummary !== null && ingestSummary.failures.length > 0;
   const ingestPartiallyCompleted = ingestFailed && ingestSummary.batches.length > 0;
   const dedupeTotals = dedupeSummary?.results.reduce(
@@ -79,7 +95,7 @@ export function ReviewScreen({
     result.review_pairs.map(pair => ({ batchId: result.batch_id, pair })),
   ) ?? [];
   const dedupeFailed = (dedupeSummary?.failures.length ?? 0) > 0;
-  const pendingDecisionCount = reviewQueue.length + pendingTrash.length;
+  const unresolvedPairCount = reviewQueue.length;
   const dateTotals = datePlan?.plans.reduce(
     (totals, plan) => ({
       native: totals.native + (plan.counts['keep-native'] ?? 0),
@@ -101,10 +117,8 @@ export function ReviewScreen({
   ) ?? [];
   const dateFailed = dateBatchFailures.length > 0 || dateItemFailures.length > 0
     || datePlan?.complete === false || dateExecution?.complete === false;
-  const dateStageComplete = datePlan !== null && !dateFailed && (
-    dateExecution?.complete === true
-    || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
-  );
+  const dateStageComplete = datePlan !== null && !dateFailed
+    && dateExecution?.complete === true;
   const gpsTotals = gpsPlan?.plans.reduce(
     (totals, plan) => ({
       native: totals.native + (plan.counts['keep-native'] ?? 0),
@@ -132,6 +146,20 @@ export function ReviewScreen({
   const gpsWriteItems = gpsPlan?.plans.flatMap(plan =>
     plan.items.filter(item => item.action === 'write-mapped' || item.action === 'write-neighbor'),
   ) ?? [];
+  const gpsStageComplete = gpsPlan !== null && !gpsFailed && (
+    gpsExecution?.complete === true || gpsWrites === 0
+  );
+  const archiveItems = archivePlan?.items.filter(item => item.action === 'archive') ?? [];
+  const archiveAttentionItems = archivePlan?.items.filter(item =>
+    item.action === 'skip'
+    && item.reason !== 'already-archived'
+    && item.reason !== 'date-quarantined',
+  ) ?? [];
+  const archiveItemFailures = archiveExecution?.results.filter(item => item.status === 'failed') ?? [];
+  const archiveFailed = archiveExecution?.complete === false || archiveItemFailures.length > 0;
+  const archiveSnapshotOnlyFailed = archiveExecution?.complete === false
+    && archiveExecution.failed === 0
+    && archiveExecution.snapshot_error !== null;
   const duplicateCopies = scanResult.duplicates.reduce(
     (sum, group) => sum + Math.max(0, group.files.length - 1),
     0,
@@ -156,12 +184,14 @@ export function ReviewScreen({
         <header className="intake-review-head">
           <div>
             <div className="result-status"><span>✓</span> {ingestSummary
-              ? gpsExecution?.complete
+              ? archiveExecution?.complete
+                ? `已安全歸檔 · ${archiveExecution.archived} 筆進入唯讀收藏庫`
+                : gpsExecution?.complete
                 ? `位置整理完成 · ${gpsWrittenCount} 筆補值都有溯源標記`
                 : dateExecution?.complete
                 ? quarantineItems.length > 0
                   ? `日期分級完成 · ${quarantineItems.length} 筆留待人工確認`
-                  : '日期整理完成 · 估計值都有可搜尋溯源標記'
+                  : '日期分級完成 · 原生日期保留，補值才附溯源標記'
                 : trashSummary && trashSummary.completed > 0
                 ? `整理完成 · ${trashSummary.completed} 筆批准項目已進系統垃圾桶`
                 : ingestSummary.complete
@@ -225,7 +255,9 @@ export function ReviewScreen({
           <div className="section-title-row">
             <div>
               <h2 id="decision-title">phoxif 會怎麼處理</h2>
-              <p>{gpsExecution
+              <p>{archiveExecution?.complete
+                ? '已逐檔複製、讀回驗證 SHA-256 並設為唯讀；來源與工作副本仍保留，Immich 將由 external library 掃描。'
+                : gpsExecution
                 ? '位置只採用你確認的資料夾映射或可靠時間附近的原生 GPS；其他照片保持無 GPS；尚未碰 NAS。'
                 : dateExecution
                 ? '日期已依證據分級；自動補值只寫入安全工作檔並留下溯源，待確認項目保持不動；尚未碰 NAS。'
@@ -234,56 +266,51 @@ export function ReviewScreen({
                 : '目前只建立工作副本與追蹤紀錄；不刪來源、不寫 metadata、不碰 NAS。'}</p>
             </div>
           </div>
-          <div className="decision-grid">
-            <div className="decision-card readonly">
-              <span className="decision-icon">＝</span>
+          <div className="priority-ladder" aria-label="phoxif 處理優先順序">
+            <div className="priority-card primary">
+              <span className="priority-number">1</span>
               <span className="decision-copy">
-                <strong>完全相同的照片</strong>
-                <small>{duplicateCopies > 0
-                  ? `${scanResult.duplicates.length} 組、${duplicateCopies} 個副本會共用同一個內容身分；來源檔不刪。`
-                  : '沒有找到完全相同的副本。'}</small>
+                <strong>照片找得到、保得住</strong>
+                <small>先盤點、建立內容身分與安全工作副本；來源檔不刪，漏一張比多留一張嚴重。</small>
               </span>
-              <span className="decision-action">同一身分</span>
+              <span className="priority-policy">最高</span>
             </div>
-
-            <div className="decision-card readonly">
-              <span className="decision-icon">◫</span>
+            <div className="priority-card">
+              <span className="priority-number">2</span>
               <span className="decision-copy">
-                <strong>看起來很像的照片</strong>
-                <small>{similarFiles > 0
-                  ? `${scanResult.similar_groups.length} 組、${similarFiles} 張只標記為候選；這一步絕不刪除。`
-                  : '沒有需要人工判斷的相似照片。'}</small>
+                <strong>拍攝日期、GPS</strong>
+                <small>先保留原生資料，再依證據補值；不確定就保持空白或留待確認。</small>
               </span>
-              <span className="decision-action">只標記</span>
+            </div>
+            <div className="priority-card">
+              <span className="priority-number">3</span>
+              <span className="decision-copy">
+                <strong>重複照片</strong>
+                <small>{duplicateCopies + similarFiles > 0
+                  ? '內容身分比對可先在背景完成，但清理決定等日期與位置整理後再做。'
+                  : '目前沒有重複候選；之後重逢仍會由 catalog 認出。'}</small>
+              </span>
+            </div>
+            <div className="priority-card">
+              <span className="priority-number">4</span>
+              <span className="decision-copy">
+                <strong>垃圾圖／非照片</strong>
+                <small>截圖與文件只分流到獨立區，不自動刪除；誤判時仍找得回來。</small>
+              </span>
+              <span className="priority-policy">最後</span>
             </div>
           </div>
           <p className="intake-scope-note">
-            Live Photo 配對與 AAE sidecar 仍保留來源證據；聊天照片日期會依信心階梯補齊，估計值必帶 phoxif 溯源標記，不確定者進人工佇列。
+            技術上會先用 SHA-256／感知雜湊確認內容身分，目的是避免漏收與找回較完整的原檔；它不是刪除優先權。任何垃圾桶操作都排在日期與位置之後，且必須另外批准。
           </p>
         </section>
-
-        {dedupeSummary && dedupeTotals && (
-          <section className="dedupe-result" aria-label="跨來源去重結果">
-            <h2>跨來源比對完成</h2>
-            <p>只寫入 catalog 判斷；沒有刪除任何來源或工作副本。</p>
-            <div className="dedupe-result-grid">
-              <div><strong>{dedupeTotals.exact}</strong><span>同一內容</span></div>
-              <div><strong>{dedupeTotals.auto}</strong><span>高信心壓縮版</span></div>
-              <div><strong>{dedupeTotals.review}</strong><span>需要你判斷</span></div>
-              <div><strong>{dedupeTotals.protected}</strong><span>連拍／編輯版雙留</span></div>
-            </div>
-            {dedupeTotals.review > 0 && (
-              <div className="manual-review-note">有 {dedupeTotals.review} 組保持未決；你未選擇前，不會送進垃圾桶。</div>
-            )}
-          </section>
-        )}
 
         {reviewQueue.length > 0 && (
           <section className="pair-review" aria-label="需要人工判斷的相似照片">
             <div className="section-title-row">
               <div>
-                <h2>這些相似照片需要你決定</h2>
-                <p>沒有預選刪除項目。可保留其中一張，也可明確選擇兩張都留。</p>
+                <h2>無法確定是不是同一張：先保留</h2>
+                <p>為了讓每張照片都能進日期整理，請確認要留哪張；不確定就選「兩張都留」，這是預設建議。</p>
               </div>
               <span className="read-only-badge">{reviewQueue.length} 組待判斷</span>
             </div>
@@ -309,39 +336,13 @@ export function ReviewScreen({
                   className="btn-keep-both"
                   onClick={() => onResolvePair(batchId, pair, null)}
                   disabled={resolvingPair === pair.id}
-                >兩張都留</button>
+                >兩張都留（建議）</button>
               </article>
             ))}
           </section>
         )}
 
-        {dedupeSummary && reviewQueue.length === 0 && pendingTrash.length > 0 && (
-          <section className="trash-approval" aria-label="待移到系統垃圾桶">
-            <div>
-              <h2>最後一步：批准重複檔案進系統垃圾桶</h2>
-              <p>共 {pendingTrash.length} 筆。rescue 模式只動工作副本；inbox 模式會處理收件資料夾中的重複檔。原始來源證據仍留在 catalog。</p>
-            </div>
-            <div className="trash-list">
-              {pendingTrash.map(item => (
-                <div key={item.operation_id}>
-                  <strong>{item.reason === 'archived_reunion' ? '收藏庫已有相同照片' : '已確認較差版本'}</strong>
-                  <small>{item.names.join('、')}</small>
-                </div>
-              ))}
-            </div>
-            <button className="btn-danger-outline" onClick={onApproveTrash} disabled={trashing}>
-              {trashing ? '正在移到系統垃圾桶…' : `批准 ${pendingTrash.length} 筆移到系統垃圾桶`}
-            </button>
-          </section>
-        )}
-
-        {trashSummary && pendingTrash.length === 0 && (
-          <div className="trash-complete" role="status">
-            ✓ 已完成 {trashSummary.completed} 筆垃圾桶操作；{trashSummary.failed} 筆失敗。
-          </div>
-        )}
-
-        {datePlan && dateTotals && pendingDecisionCount === 0 && (
+        {datePlan && dateTotals && unresolvedPairCount === 0 && (
           <section className="dedupe-result" aria-label="日期證據結果">
             <h2>日期證據已分級</h2>
             <p>原生日期不改；檔名／聊天時間／資料夾線索會寫進工作檔並標記來源，落空或可疑者不猜。</p>
@@ -373,7 +374,7 @@ export function ReviewScreen({
           </section>
         )}
 
-        {quarantineItems.length > 0 && pendingDecisionCount === 0 && (
+        {quarantineItems.length > 0 && unresolvedPairCount === 0 && (
           <section className="date-quarantine" aria-label="日期待人工確認">
             <div className="section-title-row">
               <div>
@@ -447,6 +448,145 @@ export function ReviewScreen({
           </section>
         )}
 
+        {dedupeSummary && dedupeTotals && gpsStageComplete && (
+          <section className="dedupe-result" aria-label="跨來源去重結果">
+            <h2>第三優先：重複照片整理</h2>
+            <p>日期與位置已先完成。內容身分判斷只寫入 catalog；尚未刪除任何來源或工作副本。</p>
+            <div className="dedupe-result-grid">
+              <div><strong>{dedupeTotals.exact}</strong><span>同一內容</span></div>
+              <div><strong>{dedupeTotals.auto}</strong><span>高信心壓縮版</span></div>
+              <div><strong>{dedupeTotals.review}</strong><span>需要你判斷</span></div>
+              <div><strong>{dedupeTotals.protected}</strong><span>連拍／編輯版雙留</span></div>
+            </div>
+          </section>
+        )}
+
+        {dedupeSummary && reviewQueue.length === 0 && pendingTrash.length > 0 && gpsStageComplete && (
+          <section className="trash-approval" aria-label="待移到系統垃圾桶">
+            <div>
+              <h2>選用清理：批准重複檔進系統垃圾桶</h2>
+              <p>日期與位置已先整理。共 {pendingTrash.length} 筆；不批准也不影響收藏庫。rescue 模式只動工作副本，inbox 模式才會處理收件資料夾中的重複檔。</p>
+            </div>
+            <div className="trash-list">
+              {pendingTrash.map(item => (
+                <div key={item.operation_id}>
+                  <strong>{item.reason === 'archived_reunion' ? '收藏庫已有相同照片' : '已確認較差版本'}</strong>
+                  <small>{item.names.join('、')}</small>
+                </div>
+              ))}
+            </div>
+            <button className="btn-danger-outline" onClick={onApproveTrash} disabled={trashing}>
+              {trashing ? '正在移到系統垃圾桶…' : `批准 ${pendingTrash.length} 筆移到系統垃圾桶`}
+            </button>
+          </section>
+        )}
+
+        {trashSummary && pendingTrash.length === 0 && gpsStageComplete && (
+          <div className="trash-complete" role="status">
+            ✓ 已完成 {trashSummary.completed} 筆垃圾桶操作；{trashSummary.failed} 筆失敗。
+          </div>
+        )}
+
+        {archivePlan && gpsStageComplete && (
+          <section className="archive-review" aria-label="歸檔目的地預覽">
+            <div className="section-title-row">
+              <div>
+                <h2>最後確認：寫入主收藏庫</h2>
+                <p>這一步才會寫入目的地。每張先複製到暫存、讀回驗證 SHA-256，再發布為唯讀檔案。</p>
+              </div>
+              <span className="read-only-badge">需明確批准</span>
+            </div>
+            <div className="archive-destination">
+              <small>收藏庫根目錄</small>
+              <strong>{archivePlan.archive_root}</strong>
+            </div>
+            <div className="dedupe-result-grid">
+              <div><strong>{archivePlan.counts.archive}</strong><span>準備歸檔</span></div>
+              <div><strong>{formatSize(archivePlan.total_bytes)}</strong><span>寫入容量</span></div>
+              <div><strong>{archivePlan.counts['already-archived']}</strong><span>已在收藏庫</span></div>
+              <div><strong>{archivePlan.counts.quarantined}</strong><span>日期待確認，跳過</span></div>
+            </div>
+            {archiveItems.length > 0 && (
+              <details className="gps-plan-details" open>
+                <summary>逐檔目的地（{archiveItems.length} 筆）</summary>
+                <div className="date-quarantine-list archive-path-list">
+                  {archiveItems.map(item => (
+                    <div key={item.record_id ?? item.sha256}>
+                      <strong>{item.name}{item.record_kind === 'sidecar' ? '（編輯 sidecar）' : ''}</strong>
+                      <small>→ {item.relative_path}</small>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {archiveAttentionItems.length > 0 && (
+              <details className="gps-plan-details" open>
+                <summary>尚未歸檔，來源仍保留（{archiveAttentionItems.length} 筆）</summary>
+                <div className="date-quarantine-list archive-path-list">
+                  {archiveAttentionItems.map(item => (
+                    <div key={item.record_id ?? item.sha256}>
+                      <strong>{item.name}</strong>
+                      <small>{item.reason === 'live-partner-not-ready'
+                        ? 'Live Photo 配對尚未完整，整組保留'
+                        : item.reason === 'orphan-sidecar'
+                          ? 'AAE 找不到同名照片，先保留來源證據'
+                          : item.reason === 'sidecar-owner-not-ready'
+                            ? 'AAE 所屬照片尚未可歸檔'
+                            : item.reason === 'missing-safe-working-copy'
+                              ? '安全工作副本遺失或不完整'
+                              : item.reason === 'missing-trustworthy-date'
+                                ? '沒有可信日期，不能放入時間樹'
+                                : '前一步尚未完成，這次不寫入收藏庫'}</small>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {!archiveExecution && archiveItems.length > 0 && (
+              <div className="archive-approval">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={archiveConfirmed}
+                    onChange={event => setArchiveConfirmed(event.target.checked)}
+                  />
+                  我已確認收藏庫根目錄、檔案數量與逐檔目的地；批准本次寫入，並同意 catalog 快照只保留最近 8 份（較舊快照會移除）。
+                </label>
+                <button
+                  className="btn-execute"
+                  onClick={onArchiveExecute}
+                  disabled={!archiveConfirmed || archiving}
+                >{archiving ? '正在逐檔驗證與歸檔…' : `批准寫入 ${archiveItems.length} 筆到主收藏庫`}</button>
+              </div>
+            )}
+            {archiveExecution && (
+              <div className={archiveFailed ? 'date-failure' : 'archive-complete'} role="status">
+                <strong>{archiveFailed
+                  ? archiveSnapshotOnlyFailed
+                    ? `媒體已全數歸檔（${archiveExecution.archived} 筆），但 catalog 快照失敗`
+                    : `部分完成：${archiveExecution.archived} 筆成功、${archiveExecution.failed} 筆失敗`
+                  : `完成：${archiveExecution.archived} 筆已歸檔並設為唯讀`}</strong>
+                <small>來源與工作副本仍保留；清理必須另行批准。</small>
+                {archiveExecution.snapshot_path && <small>Catalog 快照：{archiveExecution.snapshot_path}</small>}
+                {archiveExecution.snapshot_error && <small>Catalog 快照失敗：{archiveExecution.snapshot_error}</small>}
+                {!archiveFailed && <small>下一步：到 Immich 的 External Libraries 對唯讀收藏庫執行 Scan，再抽查 timeline、搜尋標記與影片播放。</small>}
+                {archiveItemFailures.map(item => (
+                  <small key={`${item.record_kind}-${item.sha256}`}>{item.sha256.slice(0, 10)}…：{item.error ?? '歸檔失敗'}</small>
+                ))}
+                {archiveFailed && (
+                  <button className="btn-secondary" onClick={onArchiveExecute} disabled={archiving}>
+                    {archiving
+                      ? '正在安全重試…'
+                      : archiveSnapshotOnlyFailed
+                        ? '重試 catalog 快照'
+                        : '安全重試未完成項目'}
+                  </button>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
         {ingestSummary ? (
           <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
             <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
@@ -467,6 +607,9 @@ export function ReviewScreen({
                       {scanResult.mode === 'rescue'
                         ? `確認 ${ingestSummary.totals.verified_staging.toLocaleString()} 個有效工作副本；本次新寫入 ${ingestSummary.totals.staged_files.toLocaleString()} 個。`
                         : '收件資料夾中的原檔保持原位。'}
+                      {ingestSummary.totals.sidecars > 0
+                        ? ` 另保留 ${ingestSummary.totals.sidecars.toLocaleString()} 個 AAE 編輯 sidecar。`
+                        : ''}
                     </>}
               </span>
               {ingestFailed && (
@@ -479,7 +622,7 @@ export function ReviewScreen({
                 ? onIngest
                 : !dedupeSummary || dedupeFailed
                   ? onDedupe
-                  : pendingDecisionCount > 0
+                  : unresolvedPairCount > 0
                     ? undefined
                     : !datePlan
                       ? onDatePlan
@@ -493,14 +636,22 @@ export function ReviewScreen({
                             ? gpsExecution?.complete === false ? onGpsExecute : onGpsPlan
                             : gpsWrites > 0 && !gpsExecution?.complete
                               ? onGpsExecute
-                              : onReset}
-              disabled={ingesting || deduping || dating || gpsing || (dedupeSummary !== null && pendingDecisionCount > 0)}
+                              : !archivePlan
+                                ? onArchivePlan
+                                : archiveItems.length === 0
+                                  ? onReset
+                                  : archiveFailed
+                                    ? onArchiveExecute
+                                : archiveExecution?.complete
+                                  ? onReset
+                                  : undefined}
+              disabled={ingesting || deduping || dating || gpsing || archiving || (dedupeSummary !== null && unresolvedPairCount > 0) || (archivePlan !== null && archiveItems.length > 0 && archiveExecution?.complete !== true && !archiveFailed)}
             >
               {ingestFailed
                 ? (ingesting ? '正在安全重試…' : '安全重試')
                 : dedupeSummary
-                  ? pendingDecisionCount > 0
-                    ? `先完成上方 ${pendingDecisionCount} 項決定`
+                  ? unresolvedPairCount > 0
+                    ? `先確認上方 ${unresolvedPairCount} 組；不確定就兩張都留`
                     : dedupeFailed
                       ? '安全重試比對'
                       : dating
@@ -510,7 +661,7 @@ export function ReviewScreen({
                           : dateFailed
                             ? '安全重試日期階段'
                           : !dateStageComplete
-                            ? `套用 ${dateTotals?.estimated ?? 0} 筆日期並保留 ${dateTotals?.quarantine ?? 0} 筆待確認`
+                            ? `完成日期分級：保留 ${dateTotals?.native ?? 0}、補值 ${dateTotals?.estimated ?? 0}、隔離 ${dateTotals?.quarantine ?? 0}`
                             : gpsing
                               ? '正在檢查位置證據…'
                               : !gpsPlan
@@ -519,16 +670,25 @@ export function ReviewScreen({
                                   ? '安全重試位置階段'
                                   : gpsWrites > 0 && !gpsExecution?.complete
                                     ? `套用 ${gpsWrites} 筆有根據的位置`
-                                    : quarantineItems.length > 0
-                                      ? `保留 ${quarantineItems.length} 筆日期待確認，整理下一批`
-                                      : '整理下一批'
+                                    : !archivePlan
+                                      ? '預覽主收藏庫歸檔位置 →'
+                                      : archiveItems.length === 0
+                                        ? archiveAttentionItems.length > 0
+                                          ? `保留 ${archiveAttentionItems.length} 筆待處理，整理下一批`
+                                          : '這批沒有可歸檔項目，整理下一批'
+                                        : archiveFailed
+                                          ? '安全重試未完成項目'
+                                      : archiveExecution?.complete
+                                        ? '完成，整理下一批'
+                                        : '請在上方確認並批准歸檔'
                   : deduping
                     ? '正在跨來源比對…'
-                    : '檢查重複與例外 →'}
+                    : '確認每張照片都有安全身分 →'}
             </button>
             {dedupeError && <small>{dedupeError}</small>}
             {dateError && <small>{dateError}</small>}
             {gpsError && <small>{gpsError}</small>}
+            {archiveError && <small>{archiveError}</small>}
           </div>
         ) : (
           <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>

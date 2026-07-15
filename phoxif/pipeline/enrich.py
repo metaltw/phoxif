@@ -151,6 +151,18 @@ def plan_dates(
     anchor_groups: dict[tuple[str, str], list[tuple[datetime, DateEvidence]]] = {}
     for row in rows:
         sha256 = str(row["sha256"])
+        if row["collection_class"] == "non-photo":
+            preliminary[sha256] = DatePlanItem(
+                batch_id,
+                sha256,
+                None,
+                str(row["original_name"]),
+                str(row["media_type"]),
+                "skip",
+                None,
+                "classified-non-photo",
+            )
+            continue
         if row["status"] not in {"unique", "quarantined"}:
             preliminary[sha256] = DatePlanItem(
                 batch_id,

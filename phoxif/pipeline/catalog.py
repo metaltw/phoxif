@@ -21,7 +21,7 @@ FileStatus = Literal[
     "duplicate",
 ]
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 DEFAULT_CATALOG_PATH = Path("~/.phoxif/catalog.db").expanduser()
 _SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -100,7 +100,14 @@ class Catalog:
             self.connection.rollback()
             raise
 
-    def register_source(self, source_id: str, label: str, kind: Mode) -> None:
+    def register_source(
+        self,
+        source_id: str,
+        label: str,
+        kind: Mode,
+        *,
+        root_path: Path | None = None,
+    ) -> None:
         """Create a source, refusing identity drift on later runs."""
         if not _SOURCE_ID.fullmatch(source_id):
             raise ValueError(
@@ -109,23 +116,34 @@ class Catalog:
             )
         if kind not in {"rescue", "inbox"}:
             raise ValueError(f"Unsupported source kind: {kind}")
+        normalized_root = str(Path(root_path).expanduser().resolve()) if root_path else None
         existing = self.connection.execute(
-            "SELECT label, kind FROM sources WHERE source_id = ?", (source_id,)
+            "SELECT label, kind, root_path FROM sources WHERE source_id = ?", (source_id,)
         ).fetchone()
         if existing is not None:
             if existing["kind"] != kind:
                 raise ValueError(f"Source {source_id} is already registered as {existing['kind']}")
-            if existing["label"] != label:
+            if (
+                normalized_root is not None
+                and existing["root_path"] is not None
+                and str(existing["root_path"]) != normalized_root
+            ):
+                raise ValueError(f"Source {source_id} is already registered at another root")
+            if existing["label"] != label or (
+                normalized_root is not None and existing["root_path"] is None
+            ):
                 with self.transaction():
                     self.connection.execute(
-                        "UPDATE sources SET label = ? WHERE source_id = ?",
-                        (label, source_id),
+                        "UPDATE sources SET label = ?, root_path = COALESCE(root_path, ?) "
+                        "WHERE source_id = ?",
+                        (label, normalized_root, source_id),
                     )
             return
         with self.transaction():
             self.connection.execute(
-                "INSERT INTO sources(source_id, label, kind, created_at) VALUES (?, ?, ?, ?)",
-                (source_id, label, kind, utc_now()),
+                "INSERT INTO sources(source_id, label, kind, root_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (source_id, label, kind, normalized_root, utc_now()),
             )
 
     def start_batch(self, source_id: str, mode: Mode) -> str:
@@ -241,6 +259,164 @@ class Catalog:
             )
             if cursor.rowcount != 1:
                 raise KeyError(f"Unknown file: {sha256}")
+
+    def set_collection_class(
+        self,
+        sha256: str,
+        collection_class: str,
+        category: str | None,
+    ) -> None:
+        """Persist ingest-time photo versus non-photo classification."""
+        if collection_class not in {"photo", "non-photo"}:
+            raise ValueError(f"Unsupported collection class: {collection_class}")
+        if collection_class == "photo":
+            category = None
+        existing = self.file(sha256)
+        if existing is None:
+            raise KeyError(f"Unknown file: {sha256}")
+        # A later generic filename must not erase an earlier, stronger
+        # screenshot/document classification for the same content identity.
+        if existing["collection_class"] == "non-photo" and collection_class == "photo":
+            return
+        with self.transaction():
+            cursor = self.connection.execute(
+                """
+                UPDATE files SET collection_class = ?, non_photo_category = ?, updated_at = ?
+                WHERE sha256 = ?
+                """,
+                (collection_class, category, utc_now(), sha256),
+            )
+            assert cursor.rowcount == 1
+
+    def set_live_partners(self, first_sha256: str, second_sha256: str) -> None:
+        """Link the image and video identities of one verified Live Photo."""
+        if first_sha256 == second_sha256:
+            raise ValueError("A Live Photo partner must be a different file")
+        with self.transaction():
+            for sha256, partner_sha256 in (
+                (first_sha256, second_sha256),
+                (second_sha256, first_sha256),
+            ):
+                cursor = self.connection.execute(
+                    """
+                    UPDATE files SET live_partner_sha256 = ?, updated_at = ?
+                    WHERE sha256 = ?
+                      AND (live_partner_sha256 IS NULL OR live_partner_sha256 = ?)
+                    """,
+                    (partner_sha256, utc_now(), sha256, partner_sha256),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("Live Photo identity conflicts with catalog state")
+
+    def register_live_identity(self, sha256: str, content_id: str) -> None:
+        """Persist a Live Photo ID and link its unique image/video across batches."""
+        normalized = content_id.strip()
+        if not normalized:
+            return
+        record = self.file(sha256)
+        if record is None:
+            raise KeyError(f"Unknown file: {sha256}")
+        if record["live_content_id"] not in {None, normalized}:
+            raise RuntimeError("Live Photo content identity changed for existing bytes")
+        with self.transaction():
+            self.connection.execute(
+                "UPDATE files SET live_content_id = ?, updated_at = ? WHERE sha256 = ?",
+                (normalized, utc_now(), sha256),
+            )
+        members = self.connection.execute(
+            """
+            SELECT sha256, media_type FROM files
+            WHERE live_content_id = ? ORDER BY sha256
+            """,
+            (normalized,),
+        ).fetchall()
+        images = [str(member["sha256"]) for member in members if member["media_type"] == "image"]
+        videos = [str(member["sha256"]) for member in members if member["media_type"] == "video"]
+        if len(images) == 1 and len(videos) == 1:
+            self.set_live_partners(images[0], videos[0])
+
+    def record_sidecar(
+        self,
+        *,
+        sha256: str,
+        size: int,
+        ext: str,
+        owner_sha256: str | None,
+        source_id: str,
+        batch_id: str,
+        original_path: Path,
+        original_name: str,
+        staging_path: Path,
+    ) -> tuple[sqlite3.Row, bool, bool]:
+        """Record one AAE sidecar and its batch-scoped source evidence."""
+        owner_key = owner_sha256 or "orphan"
+        sidecar_id = f"{owner_key}:{sha256}"
+        existing = self.connection.execute(
+            "SELECT * FROM sidecars WHERE sidecar_id = ?", (sidecar_id,)
+        ).fetchone()
+        created = existing is None
+        now = utc_now()
+        with self.transaction():
+            if created:
+                self.connection.execute(
+                    """
+                    INSERT INTO sidecars(
+                      sidecar_id, sha256, current_sha256, size, ext, owner_sha256,
+                      status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sidecar_id,
+                        sha256,
+                        sha256,
+                        size,
+                        ext,
+                        owner_sha256,
+                        "ready" if owner_sha256 else "orphan",
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                assert existing is not None
+                if int(existing["size"]) != size or str(existing["sha256"]) != sha256:
+                    raise RuntimeError(f"Sidecar identity conflict for {sidecar_id}")
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO sidecar_sightings(
+                  sidecar_id, source_id, original_path, original_name,
+                  staging_path, seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sidecar_id,
+                    source_id,
+                    str(original_path),
+                    original_name,
+                    str(staging_path),
+                    now,
+                ),
+            )
+            sighting = self.connection.execute(
+                """
+                SELECT id FROM sidecar_sightings
+                WHERE sidecar_id = ? AND source_id = ? AND original_path = ?
+                """,
+                (sidecar_id, source_id, str(original_path)),
+            ).fetchone()
+            assert sighting is not None
+            cursor = self.connection.execute(
+                """
+                INSERT OR IGNORE INTO sidecar_batch_items(batch_id, sighting_id)
+                VALUES (?, ?)
+                """,
+                (batch_id, int(sighting["id"])),
+            )
+        record = self.connection.execute(
+            "SELECT * FROM sidecars WHERE sidecar_id = ?", (sidecar_id,)
+        ).fetchone()
+        assert record is not None
+        return record, created, cursor.rowcount == 1
 
     def add_sighting(
         self,

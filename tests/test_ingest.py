@@ -251,9 +251,7 @@ def test_source_change_during_copy_fails_without_catalog_identity(
     with Catalog(database) as catalog:
         assert catalog.count("files") == 0
         assert catalog.count("sightings") == 0
-        batch = catalog.connection.execute(
-            "SELECT finished_at, stats_json FROM batches"
-        ).fetchone()
+        batch = catalog.connection.execute("SELECT finished_at, stats_json FROM batches").fetchone()
         assert batch["finished_at"] is not None
         assert '"status": "failed"' in batch["stats_json"]
 
@@ -316,9 +314,7 @@ def test_archived_reunion_queues_one_pending_inbox_trash(
     assert repeated.archived_reunions == 1
     with Catalog(database) as catalog:
         assert catalog.count("operations") == 1
-        operation = catalog.connection.execute(
-            "SELECT op, detail_json FROM operations"
-        ).fetchone()
+        operation = catalog.connection.execute("SELECT op, detail_json FROM operations").fetchone()
         assert operation["op"] == "trash"
         assert '"reason": "archived_reunion"' in operation["detail_json"]
         assert '"status": "pending"' in operation["detail_json"]
@@ -397,3 +393,170 @@ def test_ingest_rejects_catalog_inside_source_before_writing(
         )
 
     assert sorted(source_root.iterdir()) == before
+
+
+def test_ingest_links_live_photo_and_preserves_aae_sidecar(
+    monkeypatch,
+    make_jpeg,
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "iphone"
+    image = make_jpeg("IMG_1001.jpg", directory=source_root)
+    video = source_root / "IMG_1001.mov"
+    video.write_bytes(b"paired-video")
+    sidecar = source_root / "IMG_1001.AAE"
+    sidecar.write_text("<plist>edit recipe</plist>")
+    files = [
+        {
+            "path": str(image),
+            "size": image.stat().st_size,
+            "width": 32,
+            "height": 32,
+            "live_content_id": "live-group-1",
+        },
+        {
+            "path": str(video),
+            "size": video.stat().st_size,
+            "width": 32,
+            "height": 32,
+            "live_content_id": "live-group-1",
+        },
+    ]
+    monkeypatch.setattr(
+        "phoxif.pipeline.ingest.scan_folder",
+        lambda *_args, **_kwargs: {"files": files},
+    )
+    monkeypatch.setattr("phoxif.pipeline.ingest.classify_non_photos", lambda _files: [])
+    monkeypatch.setattr("phoxif.pipeline.ingest._image_phash", lambda _path: None)
+    database = tmp_path / "catalog.db"
+    staging = tmp_path / "staging"
+
+    result = run(
+        "iphone",
+        source_root,
+        "rescue",
+        catalog_db=database,
+        staging_root=staging,
+    )
+
+    assert result.sidecars == 1
+    assert result.staged_sidecars == 1
+    with Catalog(database) as catalog:
+        image_row = catalog.file(_digest(image))
+        video_row = catalog.file(_digest(video))
+        sidecar_row = catalog.connection.execute("SELECT * FROM sidecars").fetchone()
+        sighting = catalog.connection.execute(
+            "SELECT staging_path FROM sidecar_sightings"
+        ).fetchone()
+    assert image_row["live_partner_sha256"] == _digest(video)
+    assert video_row["live_partner_sha256"] == _digest(image)
+    assert sidecar_row["owner_sha256"] == _digest(image)
+    assert sidecar_row["status"] == "ready"
+    staged_sidecar = Path(sighting["staging_path"])
+    assert staged_sidecar.read_bytes() == sidecar.read_bytes()
+    assert staged_sidecar != sidecar
+
+
+def test_ingest_keeps_aae_orphaned_when_same_stem_owner_is_ambiguous(
+    monkeypatch,
+    make_jpeg,
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "iphone"
+    first = make_jpeg(
+        "IMG_1002.jpg",
+        exif={"ImageDescription": "first"},
+        directory=source_root,
+    )
+    second = make_jpeg(
+        "IMG_1002.jpeg",
+        exif={"ImageDescription": "second"},
+        directory=source_root,
+    )
+    sidecar = source_root / "IMG_1002.AAE"
+    sidecar.write_text("<plist>ambiguous edit recipe</plist>")
+    files = [
+        {
+            "path": str(path),
+            "size": path.stat().st_size,
+            "width": 32,
+            "height": 32,
+        }
+        for path in (first, second)
+    ]
+    monkeypatch.setattr(
+        "phoxif.pipeline.ingest.scan_folder",
+        lambda *_args, **_kwargs: {"files": files},
+    )
+    monkeypatch.setattr("phoxif.pipeline.ingest.classify_non_photos", lambda _files: [])
+    monkeypatch.setattr("phoxif.pipeline.ingest._image_phash", lambda _path: None)
+    database = tmp_path / "catalog.db"
+
+    run(
+        "iphone",
+        source_root,
+        "rescue",
+        catalog_db=database,
+        staging_root=tmp_path / "staging",
+    )
+
+    with Catalog(database) as catalog:
+        sidecar_row = catalog.connection.execute("SELECT * FROM sidecars").fetchone()
+    assert sidecar_row["owner_sha256"] is None
+    assert sidecar_row["status"] == "orphan"
+
+
+def test_live_photo_links_when_image_and_video_arrive_in_different_batches(
+    monkeypatch,
+    make_jpeg,
+    tmp_path: Path,
+) -> None:
+    image_root = tmp_path / "phone-images"
+    video_root = tmp_path / "phone-videos"
+    image = make_jpeg("IMG_2002.jpg", directory=image_root)
+    video_root.mkdir()
+    video = video_root / "IMG_2002.mov"
+    video.write_bytes(b"paired-video-across-source")
+
+    def fake_scan(root: Path, _extensions: set[str]) -> dict[str, object]:
+        path = image if root == image_root.resolve() else video
+        return {
+            "files": [
+                {
+                    "path": str(path),
+                    "size": path.stat().st_size,
+                    "width": 32,
+                    "height": 32,
+                    "live_content_id": "cross-source-live-group",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("phoxif.pipeline.ingest.scan_folder", fake_scan)
+    monkeypatch.setattr("phoxif.pipeline.ingest.classify_non_photos", lambda _files: [])
+    monkeypatch.setattr("phoxif.pipeline.ingest._image_phash", lambda _path: None)
+    database = tmp_path / "catalog.db"
+    staging = tmp_path / "staging"
+
+    run(
+        "phone-images",
+        image_root,
+        "rescue",
+        catalog_db=database,
+        staging_root=staging,
+    )
+    run(
+        "phone-videos",
+        video_root,
+        "rescue",
+        catalog_db=database,
+        staging_root=staging,
+    )
+
+    with Catalog(database) as catalog:
+        image_row = catalog.file(_digest(image))
+        video_row = catalog.file(_digest(video))
+    assert image_row["live_content_id"] == "cross-source-live-group"
+    assert video_row["live_content_id"] == "cross-source-live-group"
+    assert image_row["live_partner_sha256"] == _digest(video)
+    assert video_row["live_partner_sha256"] == _digest(image)

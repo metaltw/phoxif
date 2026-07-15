@@ -2,6 +2,10 @@ base_dir: "/path/to/your/photos"
 extensions: [".jpg", ".jpeg", ".heic", ".png", ".mov", ".mp4"]
 catalog_db: "~/.phoxif/catalog.db"
 staging_dir: "~/.phoxif/staging"
+# Final Immich external-library root. Keep null until the destination is reviewed.
+# The mounted root must contain a file named .phoxif-archive-root whose only line is:
+# phoxif-archive-root-v1
+archive_root: null
 inbox_sources: []
 default_timezone: "Asia/Taipei"
 date_earliest: "1995-01-01"

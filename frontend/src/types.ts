@@ -94,6 +94,8 @@ export interface IntakeBatchResult {
   staged_files: number;
   verified_staging: number;
   phash_failures: number;
+  sidecars: number;
+  staged_sidecars: number;
   total_bytes: number;
 }
 
@@ -265,6 +267,52 @@ export interface GpsExecutionSummary {
     results: Array<{ sha256: string; status: string; reason?: string; error?: string; written?: boolean }>;
   }>;
   failures: Array<{ batch_id: string; error: string }>;
+}
+
+export interface ArchivePlanItem {
+  batch_id: string;
+  sha256: string;
+  current_sha256: string;
+  source_path: string | null;
+  name: string;
+  media_type: string;
+  size: number;
+  action: 'archive' | 'skip';
+  relative_path: string | null;
+  reason: string;
+  record_kind: 'media' | 'sidecar';
+  record_id: string | null;
+  group_id: string | null;
+  owner_sha256: string | null;
+}
+
+export interface ArchivePlanSummary {
+  archive_root: string;
+  plan_fingerprint: string;
+  batch_ids: string[];
+  items: ArchivePlanItem[];
+  counts: Record<'archive' | 'already-archived' | 'quarantined' | 'skipped', number>;
+  total_bytes: number;
+}
+
+export interface ArchiveExecutionSummary {
+  complete: boolean;
+  archive_root: string;
+  batch_ids: string[];
+  results: Array<{
+    sha256: string;
+    record_kind: 'media' | 'sidecar';
+    status: 'archived' | 'failed' | 'skipped';
+    copied?: boolean;
+    reason?: string;
+    error?: string;
+  }>;
+  archived: number;
+  failed: number;
+  skipped: number;
+  snapshot_path: string | null;
+  snapshot_error: string | null;
+  source_cleanup: 'retained-pending-separate-approval';
 }
 
 export interface Operation {

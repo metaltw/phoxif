@@ -10,9 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-def _read_exiftool_metadata(
-    base_dir: Path, extensions: set[str]
-) -> list[dict[str, Any]]:
+def _read_exiftool_metadata(base_dir: Path, extensions: set[str]) -> list[dict[str, Any]]:
     """Batch-read metadata via exiftool -json -r.
 
     Args:
@@ -94,20 +92,19 @@ def _normalize_file_info(raw: dict[str, Any]) -> dict[str, Any]:
         "filename": filename,
         "extension": extension,
         "size": raw.get("FileSize", 0),
-        "date": raw.get("DateTimeOriginal")
-        or raw.get("CreateDate")
-        or raw.get("FileModifyDate"),
+        "date": raw.get("DateTimeOriginal") or raw.get("CreateDate") or raw.get("FileModifyDate"),
         "gps_lat": raw.get("GPSLatitude"),
         "gps_lon": raw.get("GPSLongitude"),
         "orientation": raw.get("Orientation"),
         "width": raw.get("ImageWidth"),
         "height": raw.get("ImageHeight"),
-        "codec": raw.get("CompressorID")
-        or raw.get("VideoCodecID")
-        or raw.get("CompressorName"),
+        "codec": raw.get("CompressorID") or raw.get("VideoCodecID") or raw.get("CompressorName"),
         "duration": raw.get("Duration"),
         "directory": raw.get("Directory", ""),
         "mime_type": raw.get("MIMEType", ""),
+        # Apple Live Photos expose the shared identity under different tag names
+        # depending on container and exiftool version.
+        "live_content_id": raw.get("ContentIdentifier") or raw.get("MediaGroupUUID"),
     }
 
 
@@ -131,9 +128,7 @@ def scan_folder(
         extensions = {".jpg", ".jpeg", ".heic", ".png", ".mov", ".mp4"}
 
     # Normalize extensions to lowercase with dot prefix
-    extensions = {
-        ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions
-    }
+    extensions = {ext.lower() if ext.startswith(".") else f".{ext.lower()}" for ext in extensions}
 
     # Try exiftool first, fallback to basic stats
     exiftool_available = True
@@ -161,9 +156,7 @@ def scan_folder(
 
     photos = [f for f in files if Path(f["path"]).suffix.lower() in photo_exts]
     videos = [f for f in files if Path(f["path"]).suffix.lower() in video_exts]
-    with_gps = [
-        f for f in files if f["gps_lat"] is not None and f["gps_lon"] is not None
-    ]
+    with_gps = [f for f in files if f["gps_lat"] is not None and f["gps_lon"] is not None]
 
     stats = {
         "total_files": len(files),
@@ -301,9 +294,7 @@ def find_exif_orientation_issues(
             {
                 "file": f,
                 "current_orientation": orientation_int,
-                "label": _ORIENTATION_LABELS.get(
-                    orientation_int, f"Unknown ({orientation_int})"
-                ),
+                "label": _ORIENTATION_LABELS.get(orientation_int, f"Unknown ({orientation_int})"),
             }
         )
 

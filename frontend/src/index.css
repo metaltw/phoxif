@@ -272,6 +272,11 @@ button { font-family: inherit; }
 .source-summary-name strong { color: var(--text); font-size: 13px; }
 .source-summary-name small { color: var(--dim); font-size: 10px; margin-top: 2px; }
 .decision-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.priority-ladder { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.priority-card { position: relative; min-width: 0; padding: 16px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; }
+.priority-card.primary { border-color: rgba(92,143,246,.55); background: linear-gradient(145deg, rgba(92,143,246,.12), var(--bg3) 72%); }
+.priority-number { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 12px; color: var(--accent); background: var(--accent-dim); border-radius: 8px; font-weight: 750; }
+.priority-policy { position: absolute; top: 16px; right: 14px; color: var(--accent); font-size: 10px; font-weight: 700; }
 .decision-card { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 16px; text-align: left; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .decision-card:not(:disabled):hover { border-color: var(--accent); transform: translateY(-1px); }
 .decision-card:disabled { cursor: default; opacity: 0.68; }
@@ -322,6 +327,14 @@ button { font-family: inherit; }
 .date-quarantine-list small { color: var(--dim); text-align: right; }
 .gps-plan-details { margin-top: 12px; }
 .gps-plan-details summary { color: var(--accent); cursor: pointer; font-weight: 700; }
+.archive-review { margin-top: 20px; padding: 20px; border: 1px solid rgba(92,143,246,0.35); border-radius: 14px; background: rgba(92,143,246,0.05); }
+.archive-destination { display: grid; gap: 5px; margin: 14px 0; padding: 12px 14px; background: rgba(0,0,0,0.2); border-radius: 9px; overflow-wrap: anywhere; }
+.archive-destination small, .archive-path-list small { color: var(--dim); }
+.archive-approval { display: grid; gap: 12px; margin-top: 18px; }
+.archive-approval label { display: flex; align-items: flex-start; gap: 9px; color: var(--text); font-size: 12px; line-height: 1.5; }
+.archive-approval input { margin-top: 3px; }
+.archive-complete { display: grid; gap: 5px; margin-top: 16px; padding: 14px; color: var(--green); background: rgba(102,187,106,0.08); border: 1px solid var(--green-border); border-radius: 9px; }
+.archive-complete small { color: var(--dim); }
 .pair-review, .trash-approval { margin-top: 20px; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg2); }
 .pair-review-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg3); }
 .pair-distance { margin-bottom: 10px; color: var(--dim); font-size: 10px; }
@@ -402,7 +415,7 @@ button { font-family: inherit; }
   .result-metrics { grid-template-columns: 1fr 1fr; }
   .source-summary-row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; }
   .source-summary-row > span:nth-last-child(2), .source-summary-row > span:last-child { display: none; }
-  .decision-grid { grid-template-columns: 1fr; }
+  .decision-grid, .priority-ladder { grid-template-columns: 1fr; }
   .result-next-bar { align-items: stretch; flex-direction: column; }
   .intake-commit-bar { align-items: stretch; flex-direction: column; }
   .dedupe-result-grid { grid-template-columns: 1fr 1fr; }

@@ -16,7 +16,7 @@ def test_catalog_migrates_and_enables_integrity_guards(tmp_path: Path):
         journal_mode = catalog.connection.execute("PRAGMA journal_mode").fetchone()[0]
         foreign_keys = catalog.connection.execute("PRAGMA foreign_keys").fetchone()[0]
 
-    assert version == 3
+    assert version == 5
     assert journal_mode == "wal"
     assert foreign_keys == 1
 
@@ -27,6 +27,32 @@ def test_catalog_rejects_source_identity_drift(tmp_path: Path):
 
         with pytest.raises(ValueError, match="already registered"):
             catalog.register_source("old-laptop", "Old laptop", "inbox")
+
+
+def test_catalog_persists_source_root_and_rejects_root_drift(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    with Catalog(tmp_path / "catalog.db") as catalog:
+        catalog.register_source(
+            "old-laptop",
+            "Old laptop",
+            "rescue",
+            root_path=first_root,
+        )
+        source = catalog.connection.execute(
+            "SELECT root_path FROM sources WHERE source_id = 'old-laptop'"
+        ).fetchone()
+
+        assert source["root_path"] == str(first_root.resolve())
+        with pytest.raises(ValueError, match="another root"):
+            catalog.register_source(
+                "old-laptop",
+                "Old laptop",
+                "rescue",
+                root_path=second_root,
+            )
 
 
 def test_catalog_enforces_file_state_machine(tmp_path: Path):
@@ -138,7 +164,7 @@ def test_failed_migration_rolls_back_schema_and_version(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.Error):
             catalog._apply_migration(
                 "CREATE TABLE should_rollback(value TEXT); INVALID SQL;",
-                4,
+                6,
             )
 
         version = catalog.connection.execute("PRAGMA user_version").fetchone()[0]
@@ -146,5 +172,27 @@ def test_failed_migration_rolls_back_schema_and_version(tmp_path: Path) -> None:
             "SELECT 1 FROM sqlite_master WHERE name = 'should_rollback'"
         ).fetchone()
 
-    assert version == 3
+    assert version == 5
     assert table is None
+
+
+def test_non_photo_classification_is_not_erased_by_later_generic_sighting(
+    tmp_path: Path,
+) -> None:
+    digest = "d" * 64
+    with Catalog(tmp_path / "catalog.db") as catalog:
+        catalog.upsert_file(
+            sha256=digest,
+            size=5,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.set_collection_class(digest, "non-photo", "screenshot")
+        catalog.set_collection_class(digest, "photo", None)
+        record = catalog.file(digest)
+
+    assert record["collection_class"] == "non-photo"
+    assert record["non_photo_category"] == "screenshot"

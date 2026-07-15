@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
-import { analyzeDuplicates, approvePendingTrash, executeDates, executeGps, fetchPendingTrash, ingestSources, planDates, planGps, resolveDuplicate } from './api';
+import type { ArchiveExecutionSummary, ArchivePlanSummary, Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import { analyzeDuplicates, approvePendingTrash, executeArchive, executeDates, executeGps, fetchPendingTrash, ingestSources, planArchive, planDates, planGps, resolveDuplicate } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -59,6 +59,10 @@ export function App(): React.JSX.Element {
   const [gpsExecution, setGpsExecution] = useState<GpsExecutionSummary | null>(null);
   const [gpsing, setGpsing] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [archivePlan, setArchivePlan] = useState<ArchivePlanSummary | null>(null);
+  const [archiveExecution, setArchiveExecution] = useState<ArchiveExecutionSummary | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const [reviewedCategories, setReviewedCategories] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
 
@@ -108,6 +112,9 @@ export function App(): React.JSX.Element {
     setGpsPlan(null);
     setGpsExecution(null);
     setGpsError(null);
+    setArchivePlan(null);
+    setArchiveExecution(null);
+    setArchiveError(null);
 
     // Init duplicate states
     const dStates = new Map<number, ThumbState[]>();
@@ -306,6 +313,72 @@ export function App(): React.JSX.Element {
     }
   }, [ingestSummary]);
 
+  const handleArchivePlan = useCallback(async () => {
+    if (!ingestSummary) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try {
+      setArchivePlan(await planArchive(ingestSummary.batches.map(batch => batch.batch_id)));
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : '歸檔預覽失敗');
+    } finally {
+      setArchiving(false);
+    }
+  }, [ingestSummary]);
+
+  const handleArchiveExecute = useCallback(async () => {
+    if (!ingestSummary || !archivePlan) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try {
+      if (archiveExecution?.complete === false) {
+        const refreshed = await planArchive(
+          ingestSummary.batches.map(batch => batch.batch_id),
+        );
+        setArchivePlan(refreshed);
+        if (archiveExecution.failed === 0 && archiveExecution.snapshot_error) {
+          if (refreshed.archive_root !== archivePlan.archive_root) {
+            setArchiveExecution(null);
+            setArchiveError('收藏庫根目錄已變更；請重新核對目的地後再批准，尚未進行任何重試寫入。');
+            return;
+          }
+          const retried = await executeArchive(
+            ingestSummary.batches.map(batch => batch.batch_id),
+            refreshed.plan_fingerprint,
+          );
+          setArchiveExecution({
+            ...retried,
+            archived: archiveExecution.archived,
+            results: archiveExecution.results,
+          });
+          if (!retried.complete) {
+            setArchiveError('Catalog 快照仍未完成；媒體檔案維持已歸檔狀態。');
+          }
+          return;
+        }
+        setArchiveExecution(null);
+        setArchiveError('歸檔狀態已更新；請重新核對剩餘目的地後再批准。');
+        return;
+      }
+      const result = await executeArchive(
+        ingestSummary.batches.map(batch => batch.batch_id),
+        archivePlan.plan_fingerprint,
+      );
+      const totalArchived = result.results.filter(item =>
+        item.status === 'archived'
+        || (item.status === 'skipped' && item.reason === 'already-archived')
+      ).length;
+      setArchiveExecution({...result, archived: totalArchived});
+      if (!result.complete) {
+        setArchiveError('部分檔案未歸檔或 catalog 快照失敗；成功與失敗項目已分開列出。');
+      }
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : '歸檔寫入失敗');
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiveExecution, archivePlan, ingestSummary]);
+
   const resetIntake = useCallback(() => {
     setScanResult(null);
     setIngestSummary(null);
@@ -321,6 +394,9 @@ export function App(): React.JSX.Element {
     setGpsPlan(null);
     setGpsExecution(null);
     setGpsError(null);
+    setArchivePlan(null);
+    setArchiveExecution(null);
+    setArchiveError(null);
     navigateTo('scan');
   }, [navigateTo]);
 
@@ -527,6 +603,10 @@ export function App(): React.JSX.Element {
           gpsExecution={gpsExecution}
           gpsing={gpsing}
           gpsError={gpsError}
+          archivePlan={archivePlan}
+          archiveExecution={archiveExecution}
+          archiving={archiving}
+          archiveError={archiveError}
           onIngest={handleIngest}
           onDedupe={handleDedupe}
           onResolvePair={handleResolvePair}
@@ -535,6 +615,8 @@ export function App(): React.JSX.Element {
           onDateExecute={handleDateExecute}
           onGpsPlan={handleGpsPlan}
           onGpsExecute={handleGpsExecute}
+          onArchivePlan={handleArchivePlan}
+          onArchiveExecute={handleArchiveExecute}
           onReset={resetIntake}
           formatSize={formatSize}
         />

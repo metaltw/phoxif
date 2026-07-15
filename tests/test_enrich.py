@@ -138,6 +138,36 @@ def test_suspicious_native_date_is_quarantined_without_overwrite(
         assert catalog.count("operations") == 0
 
 
+def test_non_photo_skips_date_pipeline_and_remains_archive_eligible(
+    make_jpeg,
+    tmp_path: Path,
+) -> None:
+    source = make_jpeg("Screenshot 2024-01-01.jpg", directory=tmp_path / "source")
+    staging = tmp_path / "staging" / source.name
+    staging.parent.mkdir()
+    shutil.copy2(source, staging)
+    database = tmp_path / "catalog.db"
+    batch_id, digest = _catalog_photo(database, source, staging)
+    with Catalog(database) as catalog:
+        catalog.set_collection_class(digest, "non-photo", "screenshot")
+    zone = ZoneInfo("Asia/Taipei")
+
+    plan = plan_dates(
+        batch_id,
+        catalog_db=database,
+        timezone_name="Asia/Taipei",
+        earliest=datetime(1995, 1, 1, tzinfo=zone),
+        now=datetime(2026, 7, 15, tzinfo=zone),
+    )
+    result = execute_dates(plan, catalog_db=database)
+
+    assert plan.items[0].action == "skip"
+    assert plan.items[0].reason == "classified-non-photo"
+    assert result["failed"] == 0
+    with Catalog(database) as catalog:
+        assert catalog.file(digest)["status"] == "unique"
+
+
 def test_date_execute_is_idempotent_after_success(make_jpeg, tmp_path: Path) -> None:
     source = make_jpeg("IMG_20240203_040506.jpg", directory=tmp_path / "source")
     staging = tmp_path / "staging" / source.name

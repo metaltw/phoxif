@@ -29,6 +29,13 @@ from phoxif.api.logger import OperationLogger
 from phoxif.api.scanner import scan_folder
 from phoxif.config import load_config
 from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH, Catalog
+from phoxif.pipeline.archive import (
+    approval_fingerprint,
+    approval_matches,
+    execute_archive,
+    plan_archive,
+    validate_archive_root,
+)
 from phoxif.pipeline.census import IntakeMode, scan_sources
 from phoxif.pipeline.dedupe import resolve_review, run as run_dedupe
 from phoxif.pipeline.enrich import execute_dates, plan_dates
@@ -108,6 +115,20 @@ class IntakeGpsRequest(BaseModel):
     """Selected ingest batches for conservative GPS planning or execution."""
 
     batch_ids: list[str]
+
+
+class IntakeArchiveRequest(BaseModel):
+    """Selected ingest batches for a server-built archive dry-run."""
+
+    batch_ids: list[str]
+
+
+class IntakeArchiveExecuteRequest(BaseModel):
+    """Explicit approval for a freshly recomputed archive destination write."""
+
+    batch_ids: list[str]
+    plan_fingerprint: str
+    approved: bool = False
 
 
 class TrashRequest(BaseModel):
@@ -438,6 +459,26 @@ def _gps_settings() -> tuple[Path, str, dict[str, tuple[float, float]], int, boo
     return catalog_db, timezone_name, mappings, max_minutes, folder_name_as_tag
 
 
+def _archive_settings() -> tuple[Path, Path]:
+    """Load a deliberately configured archive root and reject storage overlap."""
+    config = load_config()
+    catalog_db = Path(config["catalog_db"]).expanduser().resolve()
+    staging_root = Path(config["staging_dir"]).expanduser().resolve()
+    configured = config.get("archive_root")
+    if configured is None:
+        raise ValueError("Set archive_root in config.yaml before archive planning")
+    archive_root = validate_archive_root(Path(configured))
+    if (
+        archive_root == staging_root
+        or archive_root.is_relative_to(staging_root)
+        or staging_root.is_relative_to(archive_root)
+    ):
+        raise ValueError("archive_root and staging_dir must not overlap")
+    if catalog_db.is_relative_to(archive_root):
+        raise ValueError("catalog_db must be outside archive_root")
+    return catalog_db, archive_root
+
+
 @router.post("/intake/ingest", response_model=ApiResponse)
 async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     """Create verified working copies and permanent catalog evidence."""
@@ -470,7 +511,7 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
             failures.append({"source_path": str(source), "label": source.name, "error": str(error)})
 
     totals = {
-        key: sum(int(batch[key]) for batch in batches)
+        key: sum(int(batch.get(key, 0)) for batch in batches)
         for key in (
             "scanned",
             "new_files",
@@ -480,6 +521,8 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
             "staged_files",
             "verified_staging",
             "phash_failures",
+            "sidecars",
+            "staged_sidecars",
             "total_bytes",
         )
     }
@@ -739,6 +782,59 @@ async def api_intake_gps_execute(req: IntakeGpsRequest) -> ApiResponse:
             "complete": not failures and all(not result["failed"] for result in results),
             "results": results,
             "failures": failures,
+        },
+    )
+
+
+@router.post("/intake/archive/plan", response_model=ApiResponse)
+async def api_intake_archive_plan(req: IntakeArchiveRequest) -> ApiResponse:
+    """Return exact relative destinations without writing the archive root."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    try:
+        catalog_db, archive_root = _archive_settings()
+        plan = plan_archive(req.batch_ids, catalog_db=catalog_db)
+    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            "archive_root": str(archive_root),
+            "plan_fingerprint": approval_fingerprint(plan, archive_root),
+            **plan.to_dict(),
+        },
+    )
+
+
+@router.post("/intake/archive/execute", response_model=ApiResponse)
+async def api_intake_archive_execute(req: IntakeArchiveExecuteRequest) -> ApiResponse:
+    """Recompute the plan server-side and execute only with explicit approval."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    if not req.approved:
+        return ApiResponse(ok=False, error="Archive destination write requires approval")
+    try:
+        catalog_db, archive_root = _archive_settings()
+        plan = plan_archive(req.batch_ids, catalog_db=catalog_db)
+        if not approval_matches(plan, archive_root, req.plan_fingerprint):
+            return ApiResponse(
+                ok=False,
+                error="Archive plan changed since preview; review the new plan before approval",
+            )
+        result = execute_archive(
+            plan,
+            catalog_db=catalog_db,
+            archive_root=archive_root,
+            approved=True,
+        )
+    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            **result,
+            "archive_root": str(archive_root),
+            "complete": result["failed"] == 0 and result["snapshot_error"] is None,
         },
     )
 

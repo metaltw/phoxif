@@ -17,6 +17,7 @@ from typing import Literal
 import imagehash
 from PIL import Image
 
+from phoxif.api.classifier import CATEGORY_MESSAGING, classify_non_photos
 from phoxif.api.scanner import scan_folder
 from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH, Catalog
 
@@ -42,6 +43,8 @@ class BatchResult:
     staged_files: int
     verified_staging: int
     phash_failures: int
+    sidecars: int
+    staged_sidecars: int
     total_bytes: int
 
     def to_dict(self) -> dict[str, str | int]:
@@ -116,12 +119,7 @@ def _reject_catalog_inside_source(source_root: Path, catalog_db: Path) -> None:
 
 def _verified_copy(path: Path | None, sha256: str) -> bool:
     """Return whether a recorded working copy still exists and is intact."""
-    return (
-        path is not None
-        and not path.is_symlink()
-        and path.is_file()
-        and _sha256(path) == sha256
-    )
+    return path is not None and not path.is_symlink() and path.is_file() and _sha256(path) == sha256
 
 
 def _quarantine_corrupt_staging(path: Path, staging_root: Path) -> None:
@@ -161,6 +159,28 @@ def _stage_copy(source: Path, destination: Path, sha256: str) -> bool:
     return True
 
 
+def _sidecar_paths(root: Path) -> list[Path]:
+    """Return visible, regular AAE files without following symlinks."""
+    return sorted(
+        path.resolve()
+        for path in root.rglob("*")
+        if path.suffix.lower() == ".aae"
+        and not path.name.startswith(".")
+        and path.is_file()
+        and not path.is_symlink()
+    )
+
+
+def _sidecar_owner(
+    path: Path,
+    media_by_stem: dict[tuple[Path, str], list[tuple[str, str]]],
+) -> str | None:
+    """Link an AAE only when exactly one same-folder image owner exists."""
+    candidates = media_by_stem.get((path.parent.resolve(), path.stem.casefold()), [])
+    image_candidates = {sha256 for sha256, media_type in candidates if media_type == "image"}
+    return next(iter(image_candidates)) if len(image_candidates) == 1 else None
+
+
 def run(
     source_id: str,
     root: Path,
@@ -194,14 +214,21 @@ def run(
 
     scan = scan_folder(root, MEDIA_EXTENSIONS)
     files = scan["files"]
-    total_bytes = sum(int(file_info["size"]) for file_info in files)
+    classifications = {
+        str(Path(item["file"]["path"]).resolve()): str(item["category"])
+        for item in classify_non_photos(files)
+    }
+    sidecar_paths = _sidecar_paths(root)
+    total_bytes = sum(int(file_info["size"]) for file_info in files) + sum(
+        path.stat().st_size for path in sidecar_paths
+    )
     if mode == "rescue":
         resolved_staging = Path(staging_root).expanduser().resolve()
         _reject_overlapping_roots(root, resolved_staging)
         _preflight_staging(resolved_staging, total_bytes)
 
     with Catalog(resolved_catalog) as catalog:
-        catalog.register_source(source_id, label or root.name, mode)
+        catalog.register_source(source_id, label or root.name, mode, root_path=root)
         batch_id = catalog.start_batch(source_id, mode)
         counters = {
             "scanned": len(files),
@@ -212,10 +239,13 @@ def run(
             "staged_files": 0,
             "verified_staging": 0,
             "phash_failures": 0,
+            "sidecars": 0,
+            "staged_sidecars": 0,
             "total_bytes": total_bytes,
         }
 
         try:
+            media_by_stem: dict[tuple[Path, str], list[tuple[str, str]]] = {}
             for file_info in files:
                 source_path = Path(file_info["path"]).resolve()
                 stat = source_path.stat()
@@ -243,22 +273,25 @@ def run(
                         if candidate is not None
                     ]
                     staging_path = next(
-                        (candidate for candidate in candidates if _verified_copy(candidate, sha256)),
+                        (
+                            candidate
+                            for candidate in candidates
+                            if _verified_copy(candidate, sha256)
+                        ),
                         None,
                     )
                     if staging_path is None:
                         resolved_staging = Path(staging_root).expanduser().resolve()
                         for candidate in candidates:
-                            if (candidate.exists() or candidate.is_symlink()) and not _verified_copy(
+                            if (
+                                candidate.exists() or candidate.is_symlink()
+                            ) and not _verified_copy(
                                 candidate,
                                 sha256,
                             ):
                                 _quarantine_corrupt_staging(candidate, resolved_staging)
                         staging_path = (
-                            resolved_staging
-                            / "objects"
-                            / sha256[:2]
-                            / f"{sha256}{extension}"
+                            resolved_staging / "objects" / sha256[:2] / f"{sha256}{extension}"
                         )
                         if (
                             staging_path.exists() or staging_path.is_symlink()
@@ -275,10 +308,7 @@ def run(
                     staging_path = None
 
                 final_stat = source_path.stat()
-                if (
-                    final_stat.st_size != stat.st_size
-                    or final_stat.st_mtime_ns != stat.st_mtime_ns
-                ):
+                if final_stat.st_size != stat.st_size or final_stat.st_mtime_ns != stat.st_mtime_ns:
                     raise RuntimeError(f"Source changed during ingest: {source_path}")
 
                 birthtime = getattr(stat, "st_birthtime", None)
@@ -298,6 +328,21 @@ def run(
                     original_btime=_iso_timestamp(birthtime),
                     staging_path=staging_path,
                 )
+                category = classifications.get(str(source_path))
+                catalog.set_collection_class(
+                    str(record["sha256"]),
+                    "photo" if category in {None, CATEGORY_MESSAGING} else "non-photo",
+                    category,
+                )
+                media_by_stem.setdefault(
+                    (source_path.parent.resolve(), source_path.stem.casefold()), []
+                ).append((str(record["sha256"]), media_type))
+                live_content_id = file_info.get("live_content_id")
+                if live_content_id:
+                    catalog.register_live_identity(
+                        str(record["sha256"]),
+                        str(live_content_id),
+                    )
                 counters["new_files" if created else "already_known"] += 1
                 if new_sighting:
                     counters["new_sightings"] += 1
@@ -316,6 +361,37 @@ def run(
                             sha256=str(record["sha256"]),
                             source_path=source_path,
                         )
+
+            for sidecar_path in sidecar_paths:
+                stat = sidecar_path.stat()
+                sha256 = _sha256(sidecar_path)
+                owner_sha256 = _sidecar_owner(sidecar_path, media_by_stem)
+                if mode == "rescue":
+                    resolved_staging = Path(staging_root).expanduser().resolve()
+                    staging_path = resolved_staging / "sidecars" / sha256[:2] / f"{sha256}.aae"
+                    if _stage_copy(sidecar_path, staging_path, sha256):
+                        counters["staged_sidecars"] += 1
+                    if not _verified_copy(staging_path, sha256):
+                        raise RuntimeError(
+                            f"Sidecar working-copy verification failed for {sidecar_path}"
+                        )
+                else:
+                    staging_path = sidecar_path
+                final_stat = sidecar_path.stat()
+                if final_stat.st_size != stat.st_size or final_stat.st_mtime_ns != stat.st_mtime_ns:
+                    raise RuntimeError(f"Source changed during ingest: {sidecar_path}")
+                catalog.record_sidecar(
+                    sha256=sha256,
+                    size=stat.st_size,
+                    ext=".aae",
+                    owner_sha256=owner_sha256,
+                    source_id=source_id,
+                    batch_id=batch_id,
+                    original_path=sidecar_path,
+                    original_name=sidecar_path.name,
+                    staging_path=staging_path,
+                )
+                counters["sidecars"] += 1
 
             result = BatchResult(
                 batch_id=batch_id,
