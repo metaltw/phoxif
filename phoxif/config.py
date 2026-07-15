@@ -65,6 +65,13 @@ def load_config(
         "skip_dirs": set(
             raw.get("skip_dirs", ["Unknown", ".thumbnails", ".previews", "__pycache__"])
         ),
+        "catalog_db": Path(raw.get("catalog_db", "~/.phoxif/catalog.db")).expanduser(),
+        "staging_dir": Path(raw.get("staging_dir", "~/.phoxif/staging")).expanduser(),
+        "inbox_sources": [
+            Path(source).expanduser() for source in raw.get("inbox_sources", [])
+        ],
+        "default_timezone": raw.get("default_timezone", "Asia/Taipei"),
+        "folder_name_as_tag": bool(raw.get("folder_name_as_tag", False)),
     }
 
     # Parse GPS locations: {"Name": {"lat": x, "lon": y}} → {"Name": (lat, lon)}

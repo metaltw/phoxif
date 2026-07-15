@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue } from './types';
+import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary } from './types';
+import { ingestSources } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -40,6 +41,9 @@ export function App(): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>('scan');
   const [prevScreen, setPrevScreen] = useState<Screen>('scan');
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestSummary, setIngestSummary] = useState<IntakeIngestSummary | null>(null);
+  const [ingestError, setIngestError] = useState<string | null>(null);
   const [reviewedCategories, setReviewedCategories] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
 
@@ -77,6 +81,8 @@ export function App(): React.JSX.Element {
 
   const handleScanComplete = useCallback((result: ScanResult) => {
     setScanResult(result);
+    setIngestSummary(null);
+    setIngestError(null);
 
     // Init duplicate states
     const dStates = new Map<number, ThumbState[]>();
@@ -112,6 +118,27 @@ export function App(): React.JSX.Element {
     setReviewedCategories(new Set());
     setConfirmToggles({});
     navigateTo('review');
+  }, [navigateTo]);
+
+  const handleIngest = useCallback(async () => {
+    if (!scanResult) return;
+    setIngesting(true);
+    setIngestError(null);
+    try {
+      const summary = await ingestSources(scanResult.source_paths, scanResult.mode);
+      setIngestSummary(summary);
+    } catch (error) {
+      setIngestError(error instanceof Error ? error.message : '建立工作副本失敗');
+    } finally {
+      setIngesting(false);
+    }
+  }, [scanResult]);
+
+  const resetIntake = useCallback(() => {
+    setScanResult(null);
+    setIngestSummary(null);
+    setIngestError(null);
+    navigateTo('scan');
   }, [navigateTo]);
 
   const markReviewed = useCallback((category: string) => {
@@ -299,10 +326,11 @@ export function App(): React.JSX.Element {
       {screen === 'review' && scanResult && (
         <ReviewScreen
           scanResult={scanResult}
-          reviewedCategories={reviewedCategories}
-          dupStates={dupStates}
-          simStates={simStates}
-          onNavigate={navigateTo}
+          ingesting={ingesting}
+          ingestSummary={ingestSummary}
+          ingestError={ingestError}
+          onIngest={handleIngest}
+          onReset={resetIntake}
           formatSize={formatSize}
         />
       )}

@@ -1,49 +1,27 @@
 import React from 'react';
-import type { Screen, ScanResult, ThumbState } from '../types';
+import type { IntakeIngestSummary, ScanResult } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
-  reviewedCategories: Set<string>;
-  dupStates: Map<number, ThumbState[]>;
-  simStates: Map<number, ThumbState[]>;
-  onNavigate: (screen: Screen) => void;
+  ingesting: boolean;
+  ingestSummary: IntakeIngestSummary | null;
+  ingestError: string | null;
+  onIngest: () => void;
+  onReset: () => void;
   formatSize: (bytes: number) => string;
-}
-
-interface SelectionSummary {
-  count: number;
-  size: number;
-}
-
-function selectedTrash(
-  groups: Array<{ id: number; files: Array<{ size: number }> }>,
-  statesByGroup: Map<number, ThumbState[]>,
-): SelectionSummary {
-  let count = 0;
-  let size = 0;
-
-  for (const group of groups) {
-    const states = statesByGroup.get(group.id);
-    if (!states) continue;
-    states.forEach((state, index) => {
-      if (state === 'trash') {
-        count += 1;
-        size += group.files[index].size;
-      }
-    });
-  }
-
-  return { count, size };
 }
 
 export function ReviewScreen({
   scanResult,
-  reviewedCategories,
-  dupStates,
-  simStates,
-  onNavigate,
+  ingesting,
+  ingestSummary,
+  ingestError,
+  onIngest,
+  onReset,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
+  const ingestFailed = ingestSummary !== null && ingestSummary.failures.length > 0;
+  const ingestPartiallyCompleted = ingestFailed && ingestSummary.batches.length > 0;
   const duplicateCopies = scanResult.duplicates.reduce(
     (sum, group) => sum + Math.max(0, group.files.length - 1),
     0,
@@ -52,25 +30,30 @@ export function ReviewScreen({
     (sum, group) => sum + group.files.length,
     0,
   );
-  const duplicateSelection = selectedTrash(scanResult.duplicates, dupStates);
-  const similarSelection = selectedTrash(scanResult.similar_groups, simStates);
-  const selectedCount = duplicateSelection.count + similarSelection.count;
-  const selectedSize = duplicateSelection.size + similarSelection.size;
-  const hasReviewItems = duplicateCopies > 0 || similarFiles > 0;
   const modeCopy = scanResult.mode === 'inbox'
     ? '這次以 LINE／WeChat 照片為主；日期不確定的照片會留下來確認，不會猜了就寫進檔案。'
-    : '這次先把各處照片合併盤點；相同副本只留一份，看起來相似的照片交給你決定。';
+    : '這次先把各處照片合併盤點；相同內容只建立一個身分，原始來源保持不動。';
+  const ingestTitle = scanResult.mode === 'rescue'
+    ? '建立安全工作副本'
+    : '登記這批收件照片';
+  const ingestDescription = scanResult.mode === 'rescue'
+    ? '每個檔案以 SHA-256 建立身分，複製後再次驗證；舊硬碟與原資料夾完全不動。'
+    : '檔案留在收件資料夾，先建立永久紀錄；真正歸檔前仍會再讓你確認。';
 
   return (
     <div className="screen">
       <main className="intake-review">
         <header className="intake-review-head">
           <div>
-            <div className="result-status"><span>✓</span> 唯讀掃描完成 · 尚未更動任何檔案</div>
+            <div className="result-status"><span>✓</span> {ingestSummary
+              ? ingestSummary.complete
+                ? '安全登記完成 · 原始來源保持不動'
+                : '部分來源已登記 · 原始來源保持不動'
+              : '唯讀掃描完成 · 尚未更動任何檔案'}</div>
             <h1>這批照片，我們看清楚了</h1>
             <p>{modeCopy}</p>
           </div>
-          <button className="btn-secondary" onClick={() => onNavigate('scan')}>重新選擇</button>
+          <button className="btn-secondary" onClick={onReset} disabled={ingesting}>重新選擇</button>
         </header>
 
         <section className="result-metrics" aria-label="掃描摘要">
@@ -123,62 +106,78 @@ export function ReviewScreen({
         <section className="decision-section" aria-labelledby="decision-title">
           <div className="section-title-row">
             <div>
-              <h2 id="decision-title">只有這些需要你看</h2>
-              <p>能確定的由 phoxif 處理；可能誤判的，一律先問你。</p>
+              <h2 id="decision-title">phoxif 會怎麼處理</h2>
+              <p>目前只建立工作副本與追蹤紀錄；不刪來源、不寫 metadata、不碰 NAS。</p>
             </div>
           </div>
           <div className="decision-grid">
-            <button
-              className={`decision-card${reviewedCategories.has('duplicates') ? ' reviewed' : ''}`}
-              disabled={duplicateCopies === 0}
-              onClick={() => onNavigate('duplicates')}
-            >
+            <div className="decision-card readonly">
               <span className="decision-icon">＝</span>
               <span className="decision-copy">
                 <strong>完全相同的照片</strong>
-                {duplicateCopies > 0 ? (
-                  <small>{scanResult.duplicates.length} 組、{duplicateCopies} 個多出的副本；先讓你確認保留哪一份。</small>
-                ) : (
-                  <small>沒有找到完全相同的副本。</small>
-                )}
+                <small>{duplicateCopies > 0
+                  ? `${scanResult.duplicates.length} 組、${duplicateCopies} 個副本會共用同一個內容身分；來源檔不刪。`
+                  : '沒有找到完全相同的副本。'}</small>
               </span>
-              <span className="decision-action">{duplicateCopies > 0 ? '檢查 →' : '✓'}</span>
-            </button>
+              <span className="decision-action">同一身分</span>
+            </div>
 
-            <button
-              className={`decision-card${reviewedCategories.has('similar') ? ' reviewed' : ''}`}
-              disabled={similarFiles === 0}
-              onClick={() => onNavigate('similar')}
-            >
+            <div className="decision-card readonly">
               <span className="decision-icon">◫</span>
               <span className="decision-copy">
                 <strong>看起來很像的照片</strong>
-                {similarFiles > 0 ? (
-                  <small>{scanResult.similar_groups.length} 組、{similarFiles} 張；永遠不會自動刪除。</small>
-                ) : (
-                  <small>沒有需要人工判斷的相似照片。</small>
-                )}
+                <small>{similarFiles > 0
+                  ? `${scanResult.similar_groups.length} 組、${similarFiles} 張只標記為候選；這一步絕不刪除。`
+                  : '沒有需要人工判斷的相似照片。'}</small>
               </span>
-              <span className="decision-action">{similarFiles > 0 ? '檢查 →' : '✓'}</span>
-            </button>
+              <span className="decision-action">只標記</span>
+            </div>
           </div>
+          <p className="intake-scope-note">
+            此里程碑先保全照片／影片本體與來源證據；Live Photo 配對、AAE sidecar、聊天日期修復會在後續整理階段完成，現在不會假裝已處理。
+          </p>
         </section>
 
-        {selectedCount > 0 ? (
-          <div className="result-next-bar">
+        {ingestSummary ? (
+          <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
+            <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
             <div>
-              <strong>已選 {selectedCount} 個副本</strong>
-              <span>預計移到系統垃圾桶，可釋放 {formatSize(selectedSize)}；執行前還會再確認一次。</span>
+              <strong>{ingestPartiallyCompleted
+                ? '部分來源已完成，部分需要重試'
+                : ingestFailed
+                  ? '這批來源尚未完成'
+                  : scanResult.mode === 'rescue'
+                    ? '安全工作副本建立完成'
+                    : '這批照片已登記'}</strong>
+              <span>
+                {ingestFailed
+                  ? `${ingestSummary.batches.length} 個來源已安全完成，${ingestSummary.failures.length} 個失敗；重試不會重複建立副本。`
+                  : <>
+                      {ingestSummary.totals.new_files.toLocaleString()} 個新內容、
+                      {ingestSummary.totals.new_sightings.toLocaleString()} 筆來源紀錄；
+                      {scanResult.mode === 'rescue'
+                        ? `確認 ${ingestSummary.totals.verified_staging.toLocaleString()} 個有效工作副本；本次新寫入 ${ingestSummary.totals.staged_files.toLocaleString()} 個。`
+                        : '收件資料夾中的原檔保持原位。'}
+                    </>}
+              </span>
+              {ingestFailed && (
+                <small>{ingestSummary.failures.map((failure) => `${failure.label}: ${failure.error}`).join('；')}</small>
+              )}
             </div>
-            <button className="btn-execute" onClick={() => onNavigate('confirm')}>查看執行方案 →</button>
+            <button className="btn-secondary" onClick={ingestFailed ? onIngest : onReset} disabled={ingesting}>
+              {ingestFailed ? (ingesting ? '正在安全重試…' : '安全重試') : '整理下一批'}
+            </button>
           </div>
         ) : (
-          <div className="result-honesty-bar">
-            <span className="honesty-icon">i</span>
+          <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>
+            <span className="commit-icon">{ingestError ? '!' : '→'}</span>
             <div>
-              <strong>{hasReviewItems ? '請先檢查上面的例外' : '盤點完成，原始檔案保持不動'}</strong>
-              <span>歸檔到相簿／NAS 與補日期會在後續階段接上；目前不會假裝已經整理完成。</span>
+              <strong>{ingestError ? '尚未建立工作副本' : ingestTitle}</strong>
+              <span>{ingestError ?? ingestDescription}</span>
             </div>
+            <button className="btn-execute" onClick={onIngest} disabled={ingesting || scanResult.total_files === 0}>
+              {ingesting ? '正在驗證與複製…' : `${ingestTitle} →`}
+            </button>
           </div>
         )}
       </main>

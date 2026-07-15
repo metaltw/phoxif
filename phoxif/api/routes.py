@@ -2,6 +2,7 @@
 
 import hashlib
 import platform
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,7 +22,10 @@ from phoxif.api.actions import (
 )
 from phoxif.api.logger import OperationLogger
 from phoxif.api.scanner import scan_folder
+from phoxif.config import load_config
+from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH
 from phoxif.pipeline.census import IntakeMode, scan_sources
+from phoxif.pipeline.ingest import DEFAULT_STAGING_ROOT, run as run_ingest
 
 router = APIRouter(prefix="/api")
 
@@ -45,6 +49,13 @@ class IntakeScanRequest(BaseModel):
     paths: list[str]
     mode: IntakeMode
     extensions: list[str] | None = None
+
+
+class IntakeIngestRequest(BaseModel):
+    """Request body for a source-preserving catalog ingest."""
+
+    paths: list[str]
+    mode: IntakeMode
 
 
 class TrashRequest(BaseModel):
@@ -295,6 +306,81 @@ async def api_intake_scan(req: IntakeScanRequest) -> ApiResponse:
         return ApiResponse(ok=True, data=scan_data)
     except (OSError, RuntimeError, ValueError) as error:
         return ApiResponse(ok=False, error=str(error))
+
+
+def _pipeline_storage_paths() -> tuple[Path, Path]:
+    """Load private catalog/staging paths without making config mandatory."""
+    try:
+        config = load_config()
+    except (FileNotFoundError, ValueError):
+        return DEFAULT_CATALOG_PATH, DEFAULT_STAGING_ROOT
+    return config["catalog_db"], config["staging_dir"]
+
+
+def _source_id(path: Path) -> str:
+    """Derive a stable, non-secret source slug from a local path."""
+    readable = re.sub(r"[^a-z0-9]+", "-", path.name.lower()).strip("-") or "source"
+    fingerprint = hashlib.sha256(str(path).encode()).hexdigest()[:8]
+    return f"{readable[:32]}-{fingerprint}"
+
+
+@router.post("/intake/ingest", response_model=ApiResponse)
+async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
+    """Create verified working copies and permanent catalog evidence."""
+    if not req.paths:
+        return ApiResponse(ok=False, error="Choose at least one photo source")
+
+    resolved_paths: list[Path] = []
+    for raw_path in req.paths:
+        resolved = _resolve_folder_path(raw_path)
+        if resolved is None:
+            return ApiResponse(ok=False, error=f"Path not found: {raw_path}")
+        if resolved not in resolved_paths:
+            resolved_paths.append(resolved)
+
+    catalog_db, staging_root = _pipeline_storage_paths()
+    batches: list[dict[str, str | int]] = []
+    failures: list[dict[str, str]] = []
+    for source in resolved_paths:
+        try:
+            result = run_ingest(
+                _source_id(source),
+                source,
+                req.mode,
+                label=source.name,
+                catalog_db=catalog_db,
+                staging_root=staging_root,
+            )
+            batches.append(result.to_dict())
+        except Exception as error:
+            failures.append(
+                {"source_path": str(source), "label": source.name, "error": str(error)}
+            )
+
+    totals = {
+        key: sum(int(batch[key]) for batch in batches)
+        for key in (
+            "scanned",
+            "new_files",
+            "new_sightings",
+            "already_known",
+            "archived_reunions",
+            "staged_files",
+            "verified_staging",
+            "phash_failures",
+            "total_bytes",
+        )
+    }
+    return ApiResponse(
+        ok=True,
+        data={
+            "mode": req.mode,
+            "complete": not failures,
+            "batches": batches,
+            "failures": failures,
+            "totals": totals,
+        },
+    )
 
 
 @router.get("/scan/status", response_model=ApiResponse)

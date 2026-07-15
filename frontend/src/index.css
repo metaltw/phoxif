@@ -275,6 +275,8 @@ button { font-family: inherit; }
 .decision-card { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 16px; text-align: left; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .decision-card:not(:disabled):hover { border-color: var(--accent); transform: translateY(-1px); }
 .decision-card:disabled { cursor: default; opacity: 0.68; }
+.decision-card.readonly { cursor: default; }
+.decision-card.readonly:hover { border-color: var(--border); transform: none; }
 .decision-card.reviewed { border-color: var(--green-border); }
 .decision-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; color: var(--accent); background: var(--accent-dim); font-size: 17px; }
 .decision-copy { min-width: 0; }
@@ -282,6 +284,7 @@ button { font-family: inherit; }
 .decision-copy strong { color: var(--bright); font-size: 13px; margin-bottom: 5px; }
 .decision-copy small { color: var(--dim); font-size: 11px; line-height: 1.5; }
 .decision-action { color: var(--accent); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.intake-scope-note { margin-top: 12px; color: var(--dim); font-size: 10px; line-height: 1.6; }
 .decision-card:disabled .decision-action { color: var(--green); }
 .result-next-bar, .result-honesty-bar { display: flex; align-items: center; gap: 16px; margin-top: 20px; padding: 16px 20px; border-radius: 12px; }
 .result-next-bar { background: var(--bg3); border: 1px solid var(--green-border); }
@@ -290,6 +293,17 @@ button { font-family: inherit; }
 .result-next-bar span, .result-honesty-bar span { color: var(--dim); font-size: 11px; }
 .result-honesty-bar { background: rgba(92,143,246,0.06); border: 1px solid rgba(92,143,246,0.2); }
 .honesty-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); font-size: 12px; font-weight: 700; }
+.intake-commit-bar { display: flex; align-items: center; gap: 16px; margin-top: 20px; padding: 18px 20px; background: rgba(92,143,246,0.07); border: 1px solid rgba(92,143,246,0.28); border-radius: 12px; }
+.intake-commit-bar.success { background: rgba(102,187,106,0.07); border-color: var(--green-border); }
+.intake-commit-bar.error { background: rgba(239,83,80,0.07); border-color: rgba(239,83,80,0.35); }
+.intake-commit-bar > div { display: grid; gap: 4px; flex: 1; }
+.intake-commit-bar strong { color: var(--bright); font-size: 13px; }
+.intake-commit-bar span { color: var(--dim); font-size: 11px; line-height: 1.5; }
+.intake-commit-bar small { color: var(--dim); font-size: 10px; line-height: 1.5; }
+.commit-icon { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; color: var(--accent); border: 1px solid currentColor; font-weight: 700; }
+.intake-commit-bar.success .commit-icon { color: var(--green); }
+.intake-commit-bar.error .commit-icon { color: #ef5350; }
+.btn-execute:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .review-wrap { padding: 32px 48px; }
 .review-wrap h2 { font-size: 22px; color: var(--bright); font-weight: 600; }
@@ -353,6 +367,7 @@ button { font-family: inherit; }
   .source-summary-row > span:nth-last-child(2), .source-summary-row > span:last-child { display: none; }
   .decision-grid { grid-template-columns: 1fr; }
   .result-next-bar { align-items: stretch; flex-direction: column; }
+  .intake-commit-bar { align-items: stretch; flex-direction: column; }
 }
 
 /* ===== DETAIL VIEWS ===== */

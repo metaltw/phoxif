@@ -82,6 +82,33 @@ export interface ScanResult {
   non_photos: NonPhotoItem[];
 }
 
+export interface IntakeBatchResult {
+  batch_id: string;
+  source_id: string;
+  mode: IntakeMode;
+  scanned: number;
+  new_files: number;
+  new_sightings: number;
+  already_known: number;
+  archived_reunions: number;
+  staged_files: number;
+  verified_staging: number;
+  phash_failures: number;
+  total_bytes: number;
+}
+
+export interface IntakeIngestSummary {
+  mode: IntakeMode;
+  complete: boolean;
+  batches: IntakeBatchResult[];
+  failures: Array<{
+    source_path: string;
+    label: string;
+    error: string;
+  }>;
+  totals: Omit<IntakeBatchResult, 'batch_id' | 'source_id' | 'mode'>;
+}
+
 export interface Operation {
   type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates' | 'move-non-photos';
   file: string;

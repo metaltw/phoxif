@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary } from './types';
+import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -183,6 +183,16 @@ export async function scanSources(paths: string[], mode: IntakeMode): Promise<Sc
     date_mismatches,
     non_photos,
   };
+}
+
+export async function ingestSources(
+  paths: string[],
+  mode: IntakeMode,
+): Promise<IntakeIngestSummary> {
+  return request<IntakeIngestSummary>('/intake/ingest', {
+    method: 'POST',
+    body: JSON.stringify({ paths, mode }),
+  });
 }
 
 export async function trashFiles(files: string[]): Promise<{ ok: boolean }> {

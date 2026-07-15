@@ -1,5 +1,10 @@
 base_dir: "/path/to/your/photos"
 extensions: [".jpg", ".jpeg", ".heic", ".png", ".mov", ".mp4"]
+catalog_db: "~/.phoxif/catalog.db"
+staging_dir: "~/.phoxif/staging"
+inbox_sources: []
+default_timezone: "Asia/Taipei"
+folder_name_as_tag: false
 nominatim_url: "https://nominatim.openstreetmap.org/reverse"
 geocache_file: ".geocache.json"
 
