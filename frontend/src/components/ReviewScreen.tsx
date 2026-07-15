@@ -1,12 +1,22 @@
 import React from 'react';
-import type { IntakeIngestSummary, ScanResult } from '../types';
+import type { DedupePair, DedupeSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
   ingesting: boolean;
   ingestSummary: IntakeIngestSummary | null;
   ingestError: string | null;
+  dedupeSummary: DedupeSummary | null;
+  deduping: boolean;
+  dedupeError: string | null;
+  resolvingPair: string | null;
+  pendingTrash: PendingTrashItem[];
+  trashing: boolean;
+  trashSummary: TrashExecutionSummary | null;
   onIngest: () => void;
+  onDedupe: () => void;
+  onResolvePair: (batchId: string, pair: DedupePair, keepSha256: string | null) => void;
+  onApproveTrash: () => void;
   onReset: () => void;
   formatSize: (bytes: number) => string;
 }
@@ -16,12 +26,36 @@ export function ReviewScreen({
   ingesting,
   ingestSummary,
   ingestError,
+  dedupeSummary,
+  deduping,
+  dedupeError,
+  resolvingPair,
+  pendingTrash,
+  trashing,
+  trashSummary,
   onIngest,
+  onDedupe,
+  onResolvePair,
+  onApproveTrash,
   onReset,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
   const ingestFailed = ingestSummary !== null && ingestSummary.failures.length > 0;
   const ingestPartiallyCompleted = ingestFailed && ingestSummary.batches.length > 0;
+  const dedupeTotals = dedupeSummary?.results.reduce(
+    (totals, result) => ({
+      exact: totals.exact + result.exact_groups.length,
+      auto: totals.auto + result.auto_groups.length,
+      review: totals.review + result.review_pairs.length,
+      protected: totals.protected + result.burst_pairs.length + result.protected_edits.length,
+    }),
+    { exact: 0, auto: 0, review: 0, protected: 0 },
+  );
+  const reviewQueue = dedupeSummary?.results.flatMap(result =>
+    result.review_pairs.map(pair => ({ batchId: result.batch_id, pair })),
+  ) ?? [];
+  const dedupeFailed = (dedupeSummary?.failures.length ?? 0) > 0;
+  const pendingDecisionCount = reviewQueue.length + pendingTrash.length;
   const duplicateCopies = scanResult.duplicates.reduce(
     (sum, group) => sum + Math.max(0, group.files.length - 1),
     0,
@@ -46,9 +80,11 @@ export function ReviewScreen({
         <header className="intake-review-head">
           <div>
             <div className="result-status"><span>✓</span> {ingestSummary
-              ? ingestSummary.complete
-                ? '安全登記完成 · 原始來源保持不動'
-                : '部分來源已登記 · 原始來源保持不動'
+              ? trashSummary && trashSummary.completed > 0
+                ? `整理完成 · ${trashSummary.completed} 筆批准項目已進系統垃圾桶`
+                : ingestSummary.complete
+                  ? '安全登記完成 · 原始來源保持不動'
+                  : '部分來源已登記 · 原始來源保持不動'
               : '唯讀掃描完成 · 尚未更動任何檔案'}</div>
             <h1>這批照片，我們看清楚了</h1>
             <p>{modeCopy}</p>
@@ -107,7 +143,9 @@ export function ReviewScreen({
           <div className="section-title-row">
             <div>
               <h2 id="decision-title">phoxif 會怎麼處理</h2>
-              <p>目前只建立工作副本與追蹤紀錄；不刪來源、不寫 metadata、不碰 NAS。</p>
+              <p>{trashSummary && trashSummary.completed > 0
+                ? '已依你的明確批准，將確認的重複檔移到系統垃圾桶；未批准的來源檔保持原位。'
+                : '目前只建立工作副本與追蹤紀錄；不刪來源、不寫 metadata、不碰 NAS。'}</p>
             </div>
           </div>
           <div className="decision-grid">
@@ -138,6 +176,85 @@ export function ReviewScreen({
           </p>
         </section>
 
+        {dedupeSummary && dedupeTotals && (
+          <section className="dedupe-result" aria-label="跨來源去重結果">
+            <h2>跨來源比對完成</h2>
+            <p>只寫入 catalog 判斷；沒有刪除任何來源或工作副本。</p>
+            <div className="dedupe-result-grid">
+              <div><strong>{dedupeTotals.exact}</strong><span>同一內容</span></div>
+              <div><strong>{dedupeTotals.auto}</strong><span>高信心壓縮版</span></div>
+              <div><strong>{dedupeTotals.review}</strong><span>需要你判斷</span></div>
+              <div><strong>{dedupeTotals.protected}</strong><span>連拍／編輯版雙留</span></div>
+            </div>
+            {dedupeTotals.review > 0 && (
+              <div className="manual-review-note">有 {dedupeTotals.review} 組保持未決；你未選擇前，不會送進垃圾桶。</div>
+            )}
+          </section>
+        )}
+
+        {reviewQueue.length > 0 && (
+          <section className="pair-review" aria-label="需要人工判斷的相似照片">
+            <div className="section-title-row">
+              <div>
+                <h2>這些相似照片需要你決定</h2>
+                <p>沒有預選刪除項目。可保留其中一張，也可明確選擇兩張都留。</p>
+              </div>
+              <span className="read-only-badge">{reviewQueue.length} 組待判斷</span>
+            </div>
+            {reviewQueue.map(({ batchId, pair }) => (
+              <article className="pair-review-card" key={`${batchId}-${pair.id}`}>
+                <div className="pair-distance">視覺距離 {pair.distance} · {pair.reason}</div>
+                <div className="pair-files">
+                  {pair.files.map(file => (
+                    <div className="pair-file" key={file.sha256}>
+                      <img src={`/api/thumbnail?path=${encodeURIComponent(file.path)}`} alt={file.name} />
+                      <strong>{file.name}</strong>
+                      <small>{file.width ?? '?'} × {file.height ?? '?'} · {formatSize(file.size)}</small>
+                      <small>{file.native_date ? '有原生拍攝日期' : '無原生拍攝日期'} · {file.has_gps ? '有 GPS' : '無 GPS'}</small>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => onResolvePair(batchId, pair, file.sha256)}
+                        disabled={resolvingPair === pair.id}
+                      >保留這張</button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="btn-keep-both"
+                  onClick={() => onResolvePair(batchId, pair, null)}
+                  disabled={resolvingPair === pair.id}
+                >兩張都留</button>
+              </article>
+            ))}
+          </section>
+        )}
+
+        {dedupeSummary && reviewQueue.length === 0 && pendingTrash.length > 0 && (
+          <section className="trash-approval" aria-label="待移到系統垃圾桶">
+            <div>
+              <h2>最後一步：批准重複檔案進系統垃圾桶</h2>
+              <p>共 {pendingTrash.length} 筆。rescue 模式只動工作副本；inbox 模式會處理收件資料夾中的重複檔。原始來源證據仍留在 catalog。</p>
+            </div>
+            <div className="trash-list">
+              {pendingTrash.map(item => (
+                <div key={item.operation_id}>
+                  <strong>{item.reason === 'archived_reunion' ? '收藏庫已有相同照片' : '已確認較差版本'}</strong>
+                  <small>{item.names.join('、')}</small>
+                </div>
+              ))}
+            </div>
+            <button className="btn-danger-outline" onClick={onApproveTrash} disabled={trashing}>
+              {trashing ? '正在移到系統垃圾桶…' : `批准 ${pendingTrash.length} 筆移到系統垃圾桶`}
+            </button>
+          </section>
+        )}
+
+        {trashSummary && pendingTrash.length === 0 && (
+          <div className="trash-complete" role="status">
+            ✓ 已完成 {trashSummary.completed} 筆垃圾桶操作；{trashSummary.failed} 筆失敗。
+          </div>
+        )}
+
         {ingestSummary ? (
           <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
             <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
@@ -164,9 +281,24 @@ export function ReviewScreen({
                 <small>{ingestSummary.failures.map((failure) => `${failure.label}: ${failure.error}`).join('；')}</small>
               )}
             </div>
-            <button className="btn-secondary" onClick={ingestFailed ? onIngest : onReset} disabled={ingesting}>
-              {ingestFailed ? (ingesting ? '正在安全重試…' : '安全重試') : '整理下一批'}
+            <button
+              className="btn-secondary"
+              onClick={ingestFailed ? onIngest : dedupeSummary ? (dedupeFailed ? onDedupe : onReset) : onDedupe}
+              disabled={ingesting || deduping || (dedupeSummary !== null && pendingDecisionCount > 0)}
+            >
+              {ingestFailed
+                ? (ingesting ? '正在安全重試…' : '安全重試')
+                : dedupeSummary
+                  ? pendingDecisionCount > 0
+                    ? `先完成上方 ${pendingDecisionCount} 項決定`
+                    : dedupeFailed
+                      ? '安全重試比對'
+                      : '整理下一批'
+                  : deduping
+                    ? '正在跨來源比對…'
+                    : '檢查重複與例外 →'}
             </button>
+            {dedupeError && <small>{dedupeError}</small>}
           </div>
         ) : (
           <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>

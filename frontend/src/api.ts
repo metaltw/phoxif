@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary } from './types';
+import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary, DedupeResolution, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -192,6 +192,47 @@ export async function ingestSources(
   return request<IntakeIngestSummary>('/intake/ingest', {
     method: 'POST',
     body: JSON.stringify({ paths, mode }),
+  });
+}
+
+export async function analyzeDuplicates(batchIds: string[]): Promise<DedupeSummary> {
+  return request<DedupeSummary>('/intake/dedupe', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds }),
+  });
+}
+
+export async function resolveDuplicate(
+  batchId: string,
+  pairId: string,
+  leftSha256: string,
+  rightSha256: string,
+  keepSha256: string | null,
+): Promise<DedupeResolution> {
+  return request<DedupeResolution>('/intake/dedupe/resolve', {
+    method: 'POST',
+    body: JSON.stringify({
+      batch_id: batchId,
+      pair_id: pairId,
+      left_sha256: leftSha256,
+      right_sha256: rightSha256,
+      keep_sha256: keepSha256,
+    }),
+  });
+}
+
+export async function fetchPendingTrash(batchIds: string[]): Promise<PendingTrashItem[]> {
+  const result = await request<{ items: PendingTrashItem[] }>('/intake/trash/pending', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds }),
+  });
+  return result.items;
+}
+
+export async function approvePendingTrash(operationIds: number[]): Promise<TrashExecutionSummary> {
+  return request('/intake/trash/execute', {
+    method: 'POST',
+    body: JSON.stringify({ operation_ids: operationIds, approved: true }),
   });
 }
 

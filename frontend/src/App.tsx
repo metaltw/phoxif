@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary } from './types';
-import { ingestSources } from './api';
+import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import { analyzeDuplicates, approvePendingTrash, fetchPendingTrash, ingestSources, resolveDuplicate } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -44,6 +44,13 @@ export function App(): React.JSX.Element {
   const [ingesting, setIngesting] = useState(false);
   const [ingestSummary, setIngestSummary] = useState<IntakeIngestSummary | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
+  const [dedupeSummary, setDedupeSummary] = useState<DedupeSummary | null>(null);
+  const [deduping, setDeduping] = useState(false);
+  const [dedupeError, setDedupeError] = useState<string | null>(null);
+  const [resolvingPair, setResolvingPair] = useState<string | null>(null);
+  const [pendingTrash, setPendingTrash] = useState<PendingTrashItem[]>([]);
+  const [trashing, setTrashing] = useState(false);
+  const [trashSummary, setTrashSummary] = useState<TrashExecutionSummary | null>(null);
   const [reviewedCategories, setReviewedCategories] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
 
@@ -83,6 +90,10 @@ export function App(): React.JSX.Element {
     setScanResult(result);
     setIngestSummary(null);
     setIngestError(null);
+    setDedupeSummary(null);
+    setDedupeError(null);
+    setPendingTrash([]);
+    setTrashSummary(null);
 
     // Init duplicate states
     const dStates = new Map<number, ThumbState[]>();
@@ -134,10 +145,82 @@ export function App(): React.JSX.Element {
     }
   }, [scanResult]);
 
+  const handleDedupe = useCallback(async () => {
+    if (!ingestSummary) return;
+    setDeduping(true);
+    setDedupeError(null);
+    try {
+      const summary = await analyzeDuplicates(ingestSummary.batches.map(batch => batch.batch_id));
+      const trashItems = await fetchPendingTrash(ingestSummary.batches.map(batch => batch.batch_id));
+      setDedupeSummary(summary);
+      setPendingTrash(trashItems);
+    } catch (error) {
+      setDedupeError(error instanceof Error ? error.message : '重複照片分析失敗');
+    } finally {
+      setDeduping(false);
+    }
+  }, [ingestSummary]);
+
+  const handleResolvePair = useCallback(async (
+    batchId: string,
+    pair: DedupePair,
+    keepSha256: string | null,
+  ) => {
+    if (!ingestSummary || pair.files.length !== 2) return;
+    setResolvingPair(pair.id);
+    setDedupeError(null);
+    let decisionSaved = false;
+    try {
+      await resolveDuplicate(
+        batchId,
+        pair.id,
+        pair.files[0].sha256,
+        pair.files[1].sha256,
+        keepSha256,
+      );
+      decisionSaved = true;
+      const batchIds = ingestSummary.batches.map(batch => batch.batch_id);
+      const refreshedSummary = await analyzeDuplicates(batchIds);
+      setDedupeSummary(refreshedSummary);
+      setPendingTrash(await fetchPendingTrash(batchIds));
+    } catch (error) {
+      if (decisionSaved) {
+        setDedupeSummary(null);
+        setDedupeError('判斷已儲存，但最新比對結果載入失敗；請重新檢查重複照片。');
+      } else {
+        setDedupeError(error instanceof Error ? error.message : '無法儲存人工判斷');
+      }
+    } finally {
+      setResolvingPair(null);
+    }
+  }, [ingestSummary]);
+
+  const handleApproveTrash = useCallback(async () => {
+    if (pendingTrash.length === 0) return;
+    setTrashing(true);
+    setDedupeError(null);
+    try {
+      const summary = await approvePendingTrash(pendingTrash.map(item => item.operation_id));
+      setTrashSummary(summary);
+      if (ingestSummary) {
+        setPendingTrash(await fetchPendingTrash(ingestSummary.batches.map(batch => batch.batch_id)));
+      }
+    } catch (error) {
+      setDedupeError(error instanceof Error ? error.message : '移到系統垃圾桶失敗');
+    } finally {
+      setTrashing(false);
+    }
+  }, [ingestSummary, pendingTrash]);
+
   const resetIntake = useCallback(() => {
     setScanResult(null);
     setIngestSummary(null);
     setIngestError(null);
+    setDedupeSummary(null);
+    setDedupeError(null);
+    setResolvingPair(null);
+    setPendingTrash([]);
+    setTrashSummary(null);
     navigateTo('scan');
   }, [navigateTo]);
 
@@ -329,7 +412,17 @@ export function App(): React.JSX.Element {
           ingesting={ingesting}
           ingestSummary={ingestSummary}
           ingestError={ingestError}
+          dedupeSummary={dedupeSummary}
+          deduping={deduping}
+          dedupeError={dedupeError}
+          resolvingPair={resolvingPair}
+          pendingTrash={pendingTrash}
+          trashing={trashing}
+          trashSummary={trashSummary}
           onIngest={handleIngest}
+          onDedupe={handleDedupe}
+          onResolvePair={handleResolvePair}
+          onApproveTrash={handleApproveTrash}
           onReset={resetIntake}
           formatSize={formatSize}
         />

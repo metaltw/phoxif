@@ -109,6 +109,74 @@ export interface IntakeIngestSummary {
   totals: Omit<IntakeBatchResult, 'batch_id' | 'source_id' | 'mode'>;
 }
 
+export interface DedupeCandidate {
+  sha256: string;
+  path: string;
+  name: string;
+  source_id: string;
+  original_dir: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  phash: string;
+  status: string;
+  native_date: string | null;
+  has_gps: boolean;
+  mtime_epoch: number;
+  pixels: number;
+}
+
+export interface DedupePair {
+  id: string;
+  distance: number;
+  reason: string;
+  files: DedupeCandidate[];
+  winner_sha256?: string;
+  loser_sha256?: string;
+}
+
+export interface DedupeBatchResult {
+  batch_id: string;
+  exact_groups: Array<{ sha256: string; copies: number }>;
+  auto_groups: DedupePair[];
+  review_pairs: DedupePair[];
+  burst_pairs: DedupePair[];
+  protected_edits: DedupePair[];
+}
+
+export interface DedupeSummary {
+  complete: boolean;
+  results: DedupeBatchResult[];
+  failures: Array<{ batch_id: string; error: string }>;
+}
+
+export interface DedupeResolution {
+  decision: string;
+  pair_id: string;
+  refreshed_result: DedupeBatchResult;
+}
+
+export interface PendingTrashItem {
+  operation_id: number;
+  batch_id: string;
+  sha256: string;
+  reason: string;
+  paths: string[];
+  names: string[];
+  kept_sha256: string | null;
+}
+
+export interface TrashExecutionSummary {
+  completed: number;
+  failed: number;
+  results: Array<{
+    operation_id: number;
+    status: 'completed' | 'failed';
+    paths: string[];
+    failures?: Array<{ path: string; error: string }>;
+  }>;
+}
+
 export interface Operation {
   type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates' | 'move-non-photos';
   file: string;

@@ -78,6 +78,41 @@ def test_ingest_rerun_is_idempotent(make_jpeg, tmp_path: Path):
         assert catalog.count("batches") == 2
 
 
+def test_duplicate_status_is_not_restaged_on_rescue_rerun(make_jpeg, tmp_path: Path) -> None:
+    source_root = tmp_path / "camera"
+    photo = make_jpeg("IMG_0012.jpg", directory=source_root)
+    database = tmp_path / "catalog.db"
+    staging = tmp_path / "staging"
+    run("camera", source_root, "rescue", catalog_db=database, staging_root=staging)
+    digest = _digest(photo)
+    staged = next(staging.rglob("*.jpg"))
+    with Catalog(database) as catalog:
+        winner = "9" * 64
+        catalog.upsert_file(
+            sha256=winner,
+            size=1,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.mark_near_duplicate("manual-batch", winner, digest, "group-1")
+    staged.unlink()
+
+    repeated = run(
+        "camera",
+        source_root,
+        "rescue",
+        catalog_db=database,
+        staging_root=staging,
+    )
+
+    assert repeated.staged_files == 0
+    assert repeated.verified_staging == 0
+    assert list(staging.rglob("*.jpg")) == []
+
+
 def test_cross_source_same_content_is_one_file_two_sightings(make_jpeg, tmp_path: Path):
     first_root = tmp_path / "laptop"
     second_root = tmp_path / "phone"

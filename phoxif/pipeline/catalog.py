@@ -374,6 +374,103 @@ class Catalog:
             )
         return True
 
+    def mark_near_duplicate(
+        self,
+        batch_id: str,
+        winner_sha256: str,
+        loser_sha256: str,
+        group_id: str,
+        *,
+        reason: str = "near_duplicate",
+    ) -> None:
+        """Persist one high-confidence near-duplicate decision without deleting files."""
+        with self.transaction():
+            winner = self.file(winner_sha256)
+            loser = self.file(loser_sha256)
+            if winner is None or loser is None:
+                raise KeyError("Unknown near-duplicate file")
+            if winner["status"] == "ingested":
+                self.connection.execute(
+                    "UPDATE files SET status = 'unique', dup_group_id = ?, updated_at = ? "
+                    "WHERE sha256 = ?",
+                    (group_id, utc_now(), winner_sha256),
+                )
+            if loser["status"] != "ingested":
+                raise ValueError(f"Cannot replace dedupe status {loser['status']}")
+            self.connection.execute(
+                """
+                UPDATE files SET status = 'duplicate', dup_group_id = ?, kept_sha256 = ?,
+                                 updated_at = ? WHERE sha256 = ?
+                """,
+                (group_id, winner_sha256, utc_now(), loser_sha256),
+            )
+            paths = [
+                str(row["candidate_path"])
+                for row in self.connection.execute(
+                    """
+                    SELECT CASE
+                             WHEN sources.kind = 'rescue' THEN sightings.staging_path
+                             ELSE COALESCE(sightings.staging_path, sightings.original_path)
+                           END AS candidate_path
+                    FROM sightings JOIN sources USING(source_id)
+                    WHERE sightings.sha256 = ? ORDER BY sightings.seen_at
+                    """,
+                    (loser_sha256,),
+                ).fetchall()
+                if row["candidate_path"] is not None
+            ]
+            detail = json.dumps(
+                {
+                    "status": "pending",
+                    "reason": reason,
+                    "kept_sha256": winner_sha256,
+                    "paths": paths,
+                },
+                sort_keys=True,
+            )
+            existing = self.connection.execute(
+                "SELECT 1 FROM operations WHERE sha256 = ? AND op = 'trash' AND detail_json = ?",
+                (loser_sha256, detail),
+            ).fetchone()
+            if paths and existing is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO operations(batch_id, sha256, op, detail_json, executed_at)
+                    VALUES (?, ?, 'trash', ?, ?)
+                    """,
+                    (batch_id, loser_sha256, detail, utc_now()),
+                )
+
+    def mark_files_unique(self, sha256_values: set[str]) -> None:
+        """Mark explicitly retained ingested files as unique."""
+        with self.transaction():
+            for sha256 in sha256_values:
+                self.connection.execute(
+                    """
+                    UPDATE files SET status = 'unique', updated_at = ?
+                    WHERE sha256 = ? AND status = 'ingested'
+                    """,
+                    (utc_now(), sha256),
+                )
+
+    def mark_batch_unique(self, batch_id: str, *, exclude: set[str]) -> None:
+        """Advance unambiguous new files after dedupe analysis."""
+        rows = self.connection.execute(
+            "SELECT DISTINCT sha256 FROM sightings WHERE batch_id = ?", (batch_id,)
+        ).fetchall()
+        with self.transaction():
+            for row in rows:
+                sha256 = str(row["sha256"])
+                if sha256 in exclude:
+                    continue
+                self.connection.execute(
+                    """
+                    UPDATE files SET status = 'unique', updated_at = ?
+                    WHERE sha256 = ? AND status = 'ingested'
+                    """,
+                    (utc_now(), sha256),
+                )
+
     def rescue_staging_paths(self, sha256: str) -> list[Path]:
         """Return previously recorded rescue copies, newest first.
 

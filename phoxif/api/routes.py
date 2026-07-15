@@ -3,13 +3,16 @@
 import hashlib
 import platform
 import re
+import sqlite3
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from fastapi import APIRouter, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from phoxif.api.actions import (
@@ -23,9 +26,12 @@ from phoxif.api.actions import (
 from phoxif.api.logger import OperationLogger
 from phoxif.api.scanner import scan_folder
 from phoxif.config import load_config
-from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH
+from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH, Catalog
 from phoxif.pipeline.census import IntakeMode, scan_sources
+from phoxif.pipeline.dedupe import resolve_review, run as run_dedupe
 from phoxif.pipeline.ingest import DEFAULT_STAGING_ROOT, run as run_ingest
+from phoxif.pipeline.trash import execute as execute_pipeline_trash
+from phoxif.pipeline.trash import pending as pending_pipeline_trash
 
 router = APIRouter(prefix="/api")
 
@@ -56,6 +62,35 @@ class IntakeIngestRequest(BaseModel):
 
     paths: list[str]
     mode: IntakeMode
+
+
+class IntakeDedupeRequest(BaseModel):
+    """Request body for conservative catalog duplicate analysis."""
+
+    batch_ids: list[str]
+
+
+class DedupeResolveRequest(BaseModel):
+    """One explicit human near-duplicate decision."""
+
+    batch_id: str
+    pair_id: str
+    left_sha256: str
+    right_sha256: str
+    keep_sha256: str | None = None
+
+
+class PipelineTrashPendingRequest(BaseModel):
+    """Request pending duplicate disposal for selected batches."""
+
+    batch_ids: list[str]
+
+
+class PipelineTrashExecuteRequest(BaseModel):
+    """Explicit approval for selected catalog trash operations."""
+
+    operation_ids: list[int]
+    approved: bool = False
 
 
 class TrashRequest(BaseModel):
@@ -324,6 +359,15 @@ def _source_id(path: Path) -> str:
     return f"{readable[:32]}-{fingerprint}"
 
 
+def _dedupe_thresholds() -> tuple[int, int]:
+    """Load conservative near-duplicate thresholds."""
+    try:
+        config = load_config()
+    except (FileNotFoundError, ValueError):
+        return 4, 10
+    return config["dedupe_auto_threshold"], config["dedupe_review_threshold"]
+
+
 @router.post("/intake/ingest", response_model=ApiResponse)
 async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     """Create verified working copies and permanent catalog evidence."""
@@ -383,6 +427,99 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     )
 
 
+@router.post("/intake/dedupe", response_model=ApiResponse)
+async def api_intake_dedupe(req: IntakeDedupeRequest) -> ApiResponse:
+    """Analyze ingested batches without deleting any user file."""
+    batch_ids = list(dict.fromkeys(req.batch_ids))
+    if not batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    auto_threshold, review_threshold = _dedupe_thresholds()
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    seen_groups: dict[str, set[str]] = {
+        "exact_groups": set(),
+        "auto_groups": set(),
+        "review_pairs": set(),
+        "burst_pairs": set(),
+        "protected_edits": set(),
+    }
+    for batch_id in batch_ids:
+        try:
+            result = run_dedupe(
+                batch_id,
+                catalog_db=catalog_db,
+                auto_threshold=auto_threshold,
+                review_threshold=review_threshold,
+            ).to_dict()
+            for key, seen in seen_groups.items():
+                identity_key = "sha256" if key == "exact_groups" else "id"
+                unique_groups = []
+                for group in result[key]:
+                    identity = str(group[identity_key])
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    unique_groups.append(group)
+                result[key] = unique_groups
+            results.append(result)
+        except Exception as error:
+            failures.append({"batch_id": batch_id, "error": str(error)})
+    return ApiResponse(
+        ok=True,
+        data={"complete": not failures, "results": results, "failures": failures},
+    )
+
+
+@router.post("/intake/dedupe/resolve", response_model=ApiResponse)
+async def api_intake_dedupe_resolve(req: DedupeResolveRequest) -> ApiResponse:
+    """Resolve one review pair after recomputing its safety constraints."""
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    auto_threshold, review_threshold = _dedupe_thresholds()
+    try:
+        decision = resolve_review(
+            req.batch_id,
+            req.pair_id,
+            req.left_sha256,
+            req.right_sha256,
+            req.keep_sha256,
+            catalog_db=catalog_db,
+            auto_threshold=auto_threshold,
+            review_threshold=review_threshold,
+        )
+    except (KeyError, OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(ok=True, data=decision)
+
+
+@router.post("/intake/trash/pending", response_model=ApiResponse)
+async def api_pipeline_trash_pending(req: PipelineTrashPendingRequest) -> ApiResponse:
+    """List duplicate files that still require explicit disposal approval."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    try:
+        items = [item.to_dict() for item in pending_pipeline_trash(catalog_db, batch_ids=req.batch_ids)]
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(ok=True, data={"items": items})
+
+
+@router.post("/intake/trash/execute", response_model=ApiResponse)
+async def api_pipeline_trash_execute(req: PipelineTrashExecuteRequest) -> ApiResponse:
+    """Execute only explicitly approved, catalog-scoped trash operations."""
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    try:
+        result = execute_pipeline_trash(
+            catalog_db,
+            req.operation_ids,
+            approved=req.approved,
+        )
+    except (OSError, PermissionError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(ok=True, data=result)
+
+
 @router.get("/scan/status", response_model=ApiResponse)
 async def api_scan_status() -> ApiResponse:
     """Return scan progress (placeholder for future WebSocket).
@@ -411,6 +548,15 @@ async def api_trash_duplicates(req: TrashRequest) -> ApiResponse:
     """
     if not req.files:
         return ApiResponse(ok=False, error="No files specified")
+
+    resolved_files = [Path(path).expanduser().resolve() for path in req.files]
+    if any(
+        not any(
+            file_path.is_relative_to(Path(cached_path)) for cached_path in _scan_cache
+        )
+        for file_path in resolved_files
+    ):
+        return ApiResponse(ok=False, error="Every trash path must belong to the current scan")
 
     # Determine base_dir from first file
     first_file = Path(req.files[0]).resolve()
@@ -914,6 +1060,93 @@ _MIME_TYPES = {
 }
 
 
+def _open_catalog_thumbnail(
+    requested_path: Path,
+    resolved_path: Path,
+) -> tuple[BinaryIO, str] | None:
+    """Open catalog evidence and retain the verified inode for later serving."""
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    if not catalog_db.exists():
+        return None
+    try:
+        with Catalog(catalog_db) as catalog:
+            rows = catalog.connection.execute(
+                """
+                SELECT DISTINCT sha256 FROM sightings
+                WHERE original_path IN (?, ?) OR staging_path IN (?, ?)
+                """,
+                (
+                    str(requested_path),
+                    str(resolved_path),
+                    str(requested_path),
+                    str(resolved_path),
+                ),
+            ).fetchall()
+    except (OSError, RuntimeError, sqlite3.Error):
+        return None
+    if not rows or not resolved_path.is_file():
+        return None
+    digest = hashlib.sha256()
+    file_handle: BinaryIO | None = None
+    try:
+        file_handle = resolved_path.open("rb")
+        while chunk := file_handle.read(1024 * 1024):
+            digest.update(chunk)
+    except OSError:
+        if file_handle is not None:
+            file_handle.close()
+        return None
+    assert file_handle is not None
+    digest_text = digest.hexdigest()
+    if digest_text not in {str(row["sha256"]) for row in rows}:
+        file_handle.close()
+        return None
+    file_handle.seek(0)
+    return file_handle, digest_text
+
+
+def _stream_verified_file(file_handle: BinaryIO) -> Iterator[bytes]:
+    """Stream and close the same inode that passed catalog hash verification."""
+    try:
+        while chunk := file_handle.read(1024 * 1024):
+            yield chunk
+    finally:
+        file_handle.close()
+
+
+def _thumbnail_cache_ready(path: Path) -> bool:
+    """Treat cache races and unreadable entries as a miss."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+@contextmanager
+def _verified_conversion_source(
+    file_handle: BinaryIO,
+    *,
+    suffix: str,
+) -> Iterator[Path]:
+    """Materialize verified bytes for a converter that only accepts paths."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".phoxif-thumb-source-",
+            suffix=suffix,
+            dir=_thumb_cache_dir,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            while chunk := file_handle.read(1024 * 1024):
+                temporary.write(chunk)
+        yield temporary_path
+    finally:
+        file_handle.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 @router.get("/thumbnail")
 async def api_thumbnail(path: str = Query(..., description="File path")) -> Response:
     """Serve a thumbnail for a file.
@@ -927,7 +1160,8 @@ async def api_thumbnail(path: str = Query(..., description="File path")) -> Resp
     Returns:
         Image file response.
     """
-    file_path = Path(path).expanduser().resolve()
+    requested_path = Path(path).expanduser()
+    file_path = requested_path.resolve()
     if not file_path.exists():
         return Response(status_code=404, content="File not found")
 
@@ -940,15 +1174,23 @@ async def api_thumbnail(path: str = Query(..., description="File path")) -> Resp
             break
         except ValueError:
             continue
+    catalog_media: tuple[BinaryIO, str] | None = None
     if not allowed:
-        return Response(
-            status_code=403, content="Access denied: path not in scanned directory"
-        )
+        catalog_media = _open_catalog_thumbnail(requested_path, file_path)
+        if catalog_media is None:
+            return Response(
+                status_code=403, content="Access denied: path not in scanned directory"
+            )
 
     ext = file_path.suffix.lower()
 
     # Browser-viewable: serve directly
     if ext in _BROWSER_VIEWABLE:
+        if catalog_media is not None:
+            return StreamingResponse(
+                _stream_verified_file(catalog_media[0]),
+                media_type=_MIME_TYPES.get(ext, "image/jpeg"),
+            )
         return FileResponse(
             str(file_path),
             media_type=_MIME_TYPES.get(ext, "image/jpeg"),
@@ -956,73 +1198,147 @@ async def api_thumbnail(path: str = Query(..., description="File path")) -> Resp
 
     # HEIC: convert via sips to cached JPEG thumbnail
     if ext in {".heic", ".heif"}:
-        cache_key = hashlib.md5(str(file_path).encode()).hexdigest()
+        cache_key = (
+            catalog_media[1]
+            if catalog_media is not None
+            else hashlib.md5(str(file_path).encode()).hexdigest()
+        )
         cached_thumb = _thumb_cache_dir / f"{cache_key}.jpg"
 
-        if not cached_thumb.exists():
+        if _thumbnail_cache_ready(cached_thumb):
+            if catalog_media is not None:
+                catalog_media[0].close()
+        else:
             try:
-                subprocess.run(
-                    [
-                        "sips",
-                        "-s",
-                        "format",
-                        "jpeg",
-                        "-s",
-                        "formatOptions",
-                        "60",
-                        "-Z",
-                        "400",
-                        str(file_path),
-                        "--out",
-                        str(cached_thumb),
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                    check=True,
+                cached_thumb.unlink(missing_ok=True)
+            except OSError:
+                if catalog_media is not None:
+                    catalog_media[0].close()
+                return Response(status_code=500, content="Thumbnail cache is unavailable")
+            temporary_output: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    prefix=".phoxif-thumb-output-",
+                    suffix=".jpg",
+                    dir=_thumb_cache_dir,
+                    delete=False,
+                ) as temporary:
+                    temporary_output = Path(temporary.name)
+                source_context = (
+                    _verified_conversion_source(catalog_media[0], suffix=ext)
+                    if catalog_media is not None
+                    else nullcontext(file_path)
                 )
+                with source_context as source_path:
+                    subprocess.run(
+                        [
+                            "sips",
+                            "-s",
+                            "format",
+                            "jpeg",
+                            "-s",
+                            "formatOptions",
+                            "60",
+                            "-Z",
+                            "400",
+                            str(source_path),
+                            "--out",
+                            str(temporary_output),
+                        ],
+                        capture_output=True,
+                        timeout=10,
+                        check=True,
+                    )
+                if temporary_output.stat().st_size == 0:
+                    raise OSError("Thumbnail converter produced an empty file")
+                temporary_output.replace(cached_thumb)
             except (
                 subprocess.CalledProcessError,
                 subprocess.TimeoutExpired,
                 FileNotFoundError,
+                OSError,
             ):
                 return Response(status_code=500, content="Thumbnail generation failed")
+            finally:
+                if catalog_media is not None and not catalog_media[0].closed:
+                    catalog_media[0].close()
+                if temporary_output is not None:
+                    temporary_output.unlink(missing_ok=True)
 
         return FileResponse(str(cached_thumb), media_type="image/jpeg")
 
     # Video: try to extract a frame via ffmpeg
     if ext in {".mov", ".mp4", ".avi", ".mkv"}:
-        cache_key = hashlib.md5(str(file_path).encode()).hexdigest()
+        cache_key = (
+            catalog_media[1]
+            if catalog_media is not None
+            else hashlib.md5(str(file_path).encode()).hexdigest()
+        )
         cached_thumb = _thumb_cache_dir / f"{cache_key}.jpg"
 
-        if not cached_thumb.exists():
+        if _thumbnail_cache_ready(cached_thumb):
+            if catalog_media is not None:
+                catalog_media[0].close()
+        else:
             try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-i",
-                        str(file_path),
-                        "-vframes",
-                        "1",
-                        "-vf",
-                        "scale=400:-1",
-                        "-q:v",
-                        "5",
-                        str(cached_thumb),
-                        "-y",
-                    ],
-                    capture_output=True,
-                    timeout=10,
-                    check=True,
+                cached_thumb.unlink(missing_ok=True)
+            except OSError:
+                if catalog_media is not None:
+                    catalog_media[0].close()
+                return Response(status_code=500, content="Thumbnail cache is unavailable")
+            temporary_output = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    prefix=".phoxif-thumb-output-",
+                    suffix=".jpg",
+                    dir=_thumb_cache_dir,
+                    delete=False,
+                ) as temporary:
+                    temporary_output = Path(temporary.name)
+                source_context = (
+                    _verified_conversion_source(catalog_media[0], suffix=ext)
+                    if catalog_media is not None
+                    else nullcontext(file_path)
                 )
+                with source_context as source_path:
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-i",
+                            str(source_path),
+                            "-vframes",
+                            "1",
+                            "-vf",
+                            "scale=400:-1",
+                            "-q:v",
+                            "5",
+                            str(temporary_output),
+                            "-y",
+                        ],
+                        capture_output=True,
+                        timeout=10,
+                        check=True,
+                    )
+                if temporary_output.stat().st_size == 0:
+                    raise OSError("Thumbnail converter produced an empty file")
+                temporary_output.replace(cached_thumb)
             except (
                 subprocess.CalledProcessError,
                 subprocess.TimeoutExpired,
                 FileNotFoundError,
+                OSError,
             ):
                 return Response(status_code=500, content="Thumbnail generation failed")
+            finally:
+                if catalog_media is not None and not catalog_media[0].closed:
+                    catalog_media[0].close()
+                if temporary_output is not None:
+                    temporary_output.unlink(missing_ok=True)
 
         return FileResponse(str(cached_thumb), media_type="image/jpeg")
 
+    if catalog_media is not None:
+        catalog_media[0].close()
     return Response(status_code=415, content="Unsupported format")
 
 

@@ -1,11 +1,15 @@
 """Contract tests for the photo-inbox API routes."""
 
 import asyncio
+import hashlib
+import io
 import sqlite3
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 from phoxif.api import routes
+from phoxif.pipeline.catalog import Catalog
 
 
 def test_intake_ingest_aggregates_unique_sources(monkeypatch, tmp_path: Path) -> None:
@@ -122,3 +126,438 @@ def test_intake_ingest_reports_partial_success(monkeypatch, tmp_path: Path) -> N
             "error": "catalog became unavailable",
         }
     ]
+
+
+def test_intake_dedupe_reports_results_and_batch_failures(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (tmp_path / "catalog.db", tmp_path / "staging"),
+    )
+    monkeypatch.setattr(routes, "_dedupe_thresholds", lambda: (4, 10))
+
+    def fake_dedupe(batch_id: str, **_kwargs):
+        if batch_id == "failed-batch":
+            raise RuntimeError("dedupe failed")
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "batch_id": batch_id,
+                "exact_groups": [],
+                "auto_groups": [],
+                "review_pairs": [],
+                "burst_pairs": [],
+                "protected_edits": [],
+            }
+        )
+
+    monkeypatch.setattr(routes, "run_dedupe", fake_dedupe)
+    response = asyncio.run(
+        routes.api_intake_dedupe(
+            routes.IntakeDedupeRequest(
+                batch_ids=["good-batch", "good-batch", "failed-batch"]
+            )
+        )
+    )
+
+    assert response.ok is True
+    assert response.data["complete"] is False
+    assert [result["batch_id"] for result in response.data["results"]] == ["good-batch"]
+    assert response.data["failures"] == [
+        {"batch_id": "failed-batch", "error": "dedupe failed"}
+    ]
+
+
+def test_dedupe_resolve_forwards_explicit_decision(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (tmp_path / "catalog.db", tmp_path / "staging"),
+    )
+    monkeypatch.setattr(routes, "_dedupe_thresholds", lambda: (4, 10))
+    captured: dict[str, object] = {}
+
+    def fake_resolve(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {"decision": "keep-both", "pair_id": "pair-1"}
+
+    monkeypatch.setattr(routes, "resolve_review", fake_resolve)
+    response = asyncio.run(
+        routes.api_intake_dedupe_resolve(
+            routes.DedupeResolveRequest(
+                batch_id="batch-1",
+                pair_id="pair-1",
+                left_sha256="a" * 64,
+                right_sha256="b" * 64,
+            )
+        )
+    )
+
+    assert response.ok is True
+    assert response.data["decision"] == "keep-both"
+    assert captured["args"] == ("batch-1", "pair-1", "a" * 64, "b" * 64, None)
+    assert captured["kwargs"]["auto_threshold"] == 4
+    assert captured["kwargs"]["review_threshold"] == 10
+
+
+def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (tmp_path / "catalog.db", tmp_path / "staging"),
+    )
+    fake_item = SimpleNamespace(to_dict=lambda: {"operation_id": 7, "paths": ["photo.jpg"]})
+    monkeypatch.setattr(routes, "pending_pipeline_trash", lambda *_args, **_kwargs: [fake_item])
+    pending_response = asyncio.run(
+        routes.api_pipeline_trash_pending(
+            routes.PipelineTrashPendingRequest(batch_ids=["batch-1"])
+        )
+    )
+    assert pending_response.ok is True
+    assert pending_response.data["items"][0]["operation_id"] == 7
+
+    monkeypatch.setattr(
+        routes,
+        "execute_pipeline_trash",
+        lambda _db, _ids, *, approved: (
+            {"completed": 1, "failed": 0, "results": []}
+            if approved
+            else (_ for _ in ()).throw(PermissionError("approval required"))
+        ),
+    )
+    denied = asyncio.run(
+        routes.api_pipeline_trash_execute(
+            routes.PipelineTrashExecuteRequest(operation_ids=[7], approved=False)
+        )
+    )
+    assert denied.ok is False
+    approved = asyncio.run(
+        routes.api_pipeline_trash_execute(
+            routes.PipelineTrashExecuteRequest(operation_ids=[7], approved=True)
+        )
+    )
+    assert approved.ok is True
+    assert approved.data["completed"] == 1
+
+    empty_pending = asyncio.run(
+        routes.api_pipeline_trash_pending(routes.PipelineTrashPendingRequest(batch_ids=[]))
+    )
+    assert empty_pending.ok is False
+
+
+def test_thumbnail_allows_catalog_working_copy_but_not_arbitrary_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.db"
+    working_copy = tmp_path / "staging" / "photo.jpg"
+    working_copy.parent.mkdir()
+    working_copy.write_bytes(b"jpeg-placeholder")
+    digest = hashlib.sha256(working_copy.read_bytes()).hexdigest()
+    arbitrary = tmp_path / "private.jpg"
+    arbitrary.write_bytes(b"not-cataloged")
+    with Catalog(database) as catalog:
+        catalog.register_source("camera", "Camera", "rescue")
+        batch_id = catalog.start_batch("camera", "rescue")
+        catalog.upsert_file(
+            sha256=digest,
+            size=working_copy.stat().st_size,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.add_sighting(
+            sha256=digest,
+            source_id="camera",
+            batch_id=batch_id,
+            original_path=tmp_path / "source" / "photo.jpg",
+            original_name="photo.jpg",
+            original_mtime=None,
+            original_btime=None,
+            staging_path=working_copy,
+        )
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (database, tmp_path / "staging"),
+    )
+    routes._scan_cache.clear()
+
+    allowed = asyncio.run(routes.api_thumbnail(str(working_copy)))
+    denied = asyncio.run(routes.api_thumbnail(str(arbitrary)))
+
+    assert allowed.status_code == 200
+    assert denied.status_code == 403
+
+
+def test_thumbnail_accepts_a_cataloged_path_before_symlink_resolution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.db"
+    real_staging = tmp_path / "real-staging"
+    real_staging.mkdir()
+    working_copy = real_staging / "photo.jpg"
+    working_copy.write_bytes(b"jpeg-placeholder")
+    digest = hashlib.sha256(working_copy.read_bytes()).hexdigest()
+    staging_alias = tmp_path / "staging-alias"
+    staging_alias.symlink_to(real_staging, target_is_directory=True)
+    catalog_path = staging_alias / working_copy.name
+    with Catalog(database) as catalog:
+        catalog.register_source("camera", "Camera", "rescue")
+        batch_id = catalog.start_batch("camera", "rescue")
+        catalog.upsert_file(
+            sha256=digest,
+            size=working_copy.stat().st_size,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.add_sighting(
+            sha256=digest,
+            source_id="camera",
+            batch_id=batch_id,
+            original_path=tmp_path / "source" / "photo.jpg",
+            original_name="photo.jpg",
+            original_mtime=None,
+            original_btime=None,
+            staging_path=catalog_path,
+        )
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (database, real_staging),
+    )
+    routes._scan_cache.clear()
+
+    response = asyncio.run(routes.api_thumbnail(str(catalog_path)))
+
+    assert response.status_code == 200
+
+
+def test_thumbnail_rejects_a_cataloged_symlink_repointed_after_ingest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.db"
+    original_dir = tmp_path / "original"
+    original_dir.mkdir()
+    original = original_dir / "photo.jpg"
+    original.write_bytes(b"cataloged-photo")
+    digest = hashlib.sha256(original.read_bytes()).hexdigest()
+    alias = tmp_path / "staging-alias"
+    alias.symlink_to(original_dir, target_is_directory=True)
+    catalog_path = alias / original.name
+    with Catalog(database) as catalog:
+        catalog.register_source("camera", "Camera", "rescue")
+        batch_id = catalog.start_batch("camera", "rescue")
+        catalog.upsert_file(
+            sha256=digest,
+            size=original.stat().st_size,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.add_sighting(
+            sha256=digest,
+            source_id="camera",
+            batch_id=batch_id,
+            original_path=tmp_path / "source" / "photo.jpg",
+            original_name="photo.jpg",
+            original_mtime=None,
+            original_btime=None,
+            staging_path=catalog_path,
+        )
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    (other_dir / "photo.jpg").write_bytes(b"private-unrelated-content")
+    replacement_alias = tmp_path / "replacement-alias"
+    replacement_alias.symlink_to(other_dir, target_is_directory=True)
+    replacement_alias.replace(alias)
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (database, original_dir),
+    )
+    routes._scan_cache.clear()
+
+    response = asyncio.run(routes.api_thumbnail(str(catalog_path)))
+
+    assert response.status_code == 403
+
+
+def test_thumbnail_streams_the_verified_inode_if_path_is_replaced(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.db"
+    working_copy = tmp_path / "photo.jpg"
+    original_bytes = b"cataloged-photo"
+    working_copy.write_bytes(original_bytes)
+    digest = hashlib.sha256(original_bytes).hexdigest()
+    with Catalog(database) as catalog:
+        catalog.register_source("camera", "Camera", "rescue")
+        batch_id = catalog.start_batch("camera", "rescue")
+        catalog.upsert_file(
+            sha256=digest,
+            size=len(original_bytes),
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.add_sighting(
+            sha256=digest,
+            source_id="camera",
+            batch_id=batch_id,
+            original_path=tmp_path / "source" / "photo.jpg",
+            original_name="photo.jpg",
+            original_mtime=None,
+            original_btime=None,
+            staging_path=working_copy,
+        )
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (database, tmp_path),
+    )
+    routes._scan_cache.clear()
+
+    async def request_then_replace() -> tuple[int, bytes]:
+        response = await routes.api_thumbnail(str(working_copy))
+        working_copy.replace(tmp_path / "verified-original.jpg")
+        working_copy.write_bytes(b"private-replacement")
+        chunks = [chunk async for chunk in response.body_iterator]
+        return response.status_code, b"".join(chunks)
+
+    status_code, body = asyncio.run(request_then_replace())
+
+    assert status_code == 200
+    assert body == original_bytes
+
+
+def test_thumbnail_denies_unscanned_path_when_catalog_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    arbitrary = tmp_path / "private.jpg"
+    arbitrary.write_bytes(b"private")
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (tmp_path / "missing.db", tmp_path / "staging"),
+    )
+    routes._scan_cache.clear()
+
+    response = asyncio.run(routes.api_thumbnail(str(arbitrary)))
+
+    assert response.status_code == 403
+
+
+def test_thumbnail_converter_failure_never_publishes_partial_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.db"
+    cache_dir = tmp_path / "thumb-cache"
+    cache_dir.mkdir()
+    files = [tmp_path / "photo.heic", tmp_path / "video.mp4"]
+    for index, media_path in enumerate(files):
+        media_path.write_bytes(f"cataloged-media-{index}".encode())
+    with Catalog(database) as catalog:
+        catalog.register_source("camera", "Camera", "rescue")
+        batch_id = catalog.start_batch("camera", "rescue")
+        for media_path in files:
+            digest = hashlib.sha256(media_path.read_bytes()).hexdigest()
+            catalog.upsert_file(
+                sha256=digest,
+                size=media_path.stat().st_size,
+                ext=media_path.suffix,
+                media_type="video" if media_path.suffix == ".mp4" else "image",
+                phash=None,
+                width=None,
+                height=None,
+            )
+            catalog.add_sighting(
+                sha256=digest,
+                source_id="camera",
+                batch_id=batch_id,
+                original_path=tmp_path / "source" / media_path.name,
+                original_name=media_path.name,
+                original_mtime=None,
+                original_btime=None,
+                staging_path=media_path,
+            )
+    monkeypatch.setattr(
+        routes,
+        "_pipeline_storage_paths",
+        lambda: (database, tmp_path),
+    )
+    monkeypatch.setattr(routes, "_thumb_cache_dir", cache_dir)
+    routes._scan_cache.clear()
+
+    def fail_after_partial_output(command, **_kwargs):
+        output_path = next(
+            Path(argument)
+            for argument in command
+            if str(argument).startswith(str(cache_dir)) and str(argument).endswith(".jpg")
+        )
+        output_path.write_bytes(b"partial-thumbnail")
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(routes.subprocess, "run", fail_after_partial_output)
+
+    responses = [asyncio.run(routes.api_thumbnail(str(media_path))) for media_path in files]
+
+    assert [response.status_code for response in responses] == [500, 500]
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_thumbnail_cache_cleanup_error_closes_verified_handle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    media_path = tmp_path / "photo.heic"
+    media_path.write_bytes(b"cataloged-media")
+    verified_handle = io.BytesIO(media_path.read_bytes())
+    monkeypatch.setattr(routes, "_thumb_cache_dir", tmp_path / "cache")
+    routes._thumb_cache_dir.mkdir()
+    monkeypatch.setattr(
+        routes,
+        "_open_catalog_thumbnail",
+        lambda *_args: (verified_handle, "a" * 64),
+    )
+    monkeypatch.setattr(routes, "_thumbnail_cache_ready", lambda _path: False)
+    routes._scan_cache.clear()
+
+    def fail_unlink(_path: Path, *, missing_ok: bool = False) -> None:
+        del missing_ok
+        raise OSError("cache became unavailable")
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    response = asyncio.run(routes.api_thumbnail(str(media_path)))
+
+    assert response.status_code == 500
+    assert verified_handle.closed is True
+
+
+def test_legacy_trash_rejects_path_outside_current_scan(tmp_path: Path) -> None:
+    scanned = tmp_path / "scanned"
+    scanned.mkdir()
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"private")
+    routes._scan_cache.clear()
+    routes._scan_cache[str(scanned)] = {"files": [], "exiftool_available": False}
+
+    response = asyncio.run(routes.api_trash_duplicates(routes.TrashRequest(files=[str(outside)])))
+
+    assert response.ok is False
+    assert response.error == "Every trash path must belong to the current scan"

@@ -72,6 +72,8 @@ def load_config(
         ],
         "default_timezone": raw.get("default_timezone", "Asia/Taipei"),
         "folder_name_as_tag": bool(raw.get("folder_name_as_tag", False)),
+        "dedupe_auto_threshold": int(raw.get("dedupe_auto_threshold", 4)),
+        "dedupe_review_threshold": int(raw.get("dedupe_review_threshold", 10)),
     }
 
     # Parse GPS locations: {"Name": {"lat": x, "lon": y}} → {"Name": (lat, lon)}

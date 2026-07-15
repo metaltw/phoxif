@@ -228,9 +228,10 @@ def run(
 
                 existing = catalog.file(sha256)
                 archived = existing is not None and existing["status"] == "archived"
+                duplicate = existing is not None and existing["status"] == "duplicate"
 
                 staging_path: Path | None
-                if mode == "rescue" and not archived:
+                if mode == "rescue" and not archived and not duplicate:
                     exact_copy = catalog.sighting_staging_path(
                         sha256,
                         source_id,
