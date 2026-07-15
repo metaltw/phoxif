@@ -177,6 +177,50 @@ export interface TrashExecutionSummary {
   }>;
 }
 
+export interface DateEvidence {
+  value: string;
+  exif_value: string;
+  source: string;
+  confidence: number;
+  estimated: boolean;
+  precision: string | null;
+  keywords: string[];
+}
+
+export interface DatePlanItem {
+  batch_id: string;
+  sha256: string;
+  path: string | null;
+  name: string;
+  media_type: string;
+  action: 'keep-native' | 'write-estimated' | 'quarantine' | 'skip';
+  evidence: DateEvidence | null;
+  reason: string;
+}
+
+export interface DateBatchPlan {
+  batch_id: string;
+  items: DatePlanItem[];
+  counts: Record<'keep-native' | 'write-estimated' | 'quarantine' | 'skip', number>;
+}
+
+export interface DatePlanSummary {
+  complete: boolean;
+  plans: DateBatchPlan[];
+  failures: Array<{ batch_id: string; error: string }>;
+}
+
+export interface DateExecutionSummary {
+  complete: boolean;
+  results: Array<{
+    batch_id: string;
+    completed: number;
+    failed: number;
+    results: Array<{ sha256: string; status: string; reason?: string; error?: string }>;
+  }>;
+  failures: Array<{ batch_id: string; error: string }>;
+}
+
 export interface Operation {
   type: 'trash' | 'rename' | 'gps' | 'convert' | 'orientation' | 'auto-rotate' | 'fix-dates' | 'move-non-photos';
   file: string;

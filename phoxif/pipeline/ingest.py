@@ -303,7 +303,7 @@ def run(
                     counters["new_sightings"] += 1
                 elif mode == "rescue" and staging_path is not None:
                     catalog.update_sighting_staging_path(
-                        sha256,
+                        str(record["sha256"]),
                         source_id,
                         source_path,
                         staging_path,
@@ -313,7 +313,7 @@ def run(
                     if mode == "inbox":
                         catalog.queue_archived_reunion(
                             batch_id=batch_id,
-                            sha256=sha256,
+                            sha256=str(record["sha256"]),
                             source_path=source_path,
                         )
 

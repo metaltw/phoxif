@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
-import { analyzeDuplicates, approvePendingTrash, fetchPendingTrash, ingestSources, resolveDuplicate } from './api';
+import type { Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import { analyzeDuplicates, approvePendingTrash, executeDates, fetchPendingTrash, ingestSources, planDates, resolveDuplicate } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -51,6 +51,10 @@ export function App(): React.JSX.Element {
   const [pendingTrash, setPendingTrash] = useState<PendingTrashItem[]>([]);
   const [trashing, setTrashing] = useState(false);
   const [trashSummary, setTrashSummary] = useState<TrashExecutionSummary | null>(null);
+  const [datePlan, setDatePlan] = useState<DatePlanSummary | null>(null);
+  const [dateExecution, setDateExecution] = useState<DateExecutionSummary | null>(null);
+  const [dating, setDating] = useState(false);
+  const [dateError, setDateError] = useState<string | null>(null);
   const [reviewedCategories, setReviewedCategories] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
 
@@ -94,6 +98,9 @@ export function App(): React.JSX.Element {
     setDedupeError(null);
     setPendingTrash([]);
     setTrashSummary(null);
+    setDatePlan(null);
+    setDateExecution(null);
+    setDateError(null);
 
     // Init duplicate states
     const dStates = new Map<number, ThumbState[]>();
@@ -212,6 +219,46 @@ export function App(): React.JSX.Element {
     }
   }, [ingestSummary, pendingTrash]);
 
+  const handleDatePlan = useCallback(async () => {
+    if (!ingestSummary) return;
+    setDating(true);
+    setDateError(null);
+    try {
+      const result = await planDates(ingestSummary.batches.map(batch => batch.batch_id));
+      setDatePlan(result);
+      if (!result.complete) {
+        setDateError('部分來源的日期證據無法讀取；請查看錯誤後安全重試。');
+      }
+    } catch (error) {
+      setDateError(error instanceof Error ? error.message : '日期證據分析失敗');
+    } finally {
+      setDating(false);
+    }
+  }, [ingestSummary]);
+
+  const handleDateExecute = useCallback(async () => {
+    if (!ingestSummary) return;
+    setDating(true);
+    setDateError(null);
+    try {
+      const result = await executeDates(ingestSummary.batches.map(batch => batch.batch_id));
+      setDateExecution(result);
+      if (!result.complete) {
+        setDateError('部分日期處理失敗；未成功的檔案不會被當成已完成。');
+        return;
+      }
+      const refreshed = await planDates(ingestSummary.batches.map(batch => batch.batch_id));
+      setDatePlan(refreshed);
+      if (!refreshed.complete) {
+        setDateError('日期已處理，但最新狀態載入不完整；請安全重試檢查。');
+      }
+    } catch (error) {
+      setDateError(error instanceof Error ? error.message : '日期補齊失敗');
+    } finally {
+      setDating(false);
+    }
+  }, [ingestSummary]);
+
   const resetIntake = useCallback(() => {
     setScanResult(null);
     setIngestSummary(null);
@@ -221,6 +268,9 @@ export function App(): React.JSX.Element {
     setResolvingPair(null);
     setPendingTrash([]);
     setTrashSummary(null);
+    setDatePlan(null);
+    setDateExecution(null);
+    setDateError(null);
     navigateTo('scan');
   }, [navigateTo]);
 
@@ -419,10 +469,16 @@ export function App(): React.JSX.Element {
           pendingTrash={pendingTrash}
           trashing={trashing}
           trashSummary={trashSummary}
+          datePlan={datePlan}
+          dateExecution={dateExecution}
+          dating={dating}
+          dateError={dateError}
           onIngest={handleIngest}
           onDedupe={handleDedupe}
           onResolvePair={handleResolvePair}
           onApproveTrash={handleApproveTrash}
+          onDatePlan={handleDatePlan}
+          onDateExecute={handleDateExecute}
           onReset={resetIntake}
           formatSize={formatSize}
         />

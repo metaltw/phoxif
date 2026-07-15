@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from phoxif.api.exif_writer import SafeEditError, _validate_file, edit_file, write_tags
+from phoxif.api.exif_writer import (
+    SafeEditError,
+    _validate_file,
+    edit_file,
+    read_tags,
+    write_tags,
+)
 
 
 def _make_corrupt_mp4(path: Path) -> None:
@@ -81,6 +87,35 @@ def test_failed_edit_leaves_original_byte_identical(make_jpeg, tmp_path: Path):
     assert list(tmp_path.glob(".phoxif-edit-*")) == []
 
 
+def test_write_tags_preserves_multiple_provenance_keywords(make_jpeg):
+    photo = make_jpeg("estimated.jpg")
+    keywords = [
+        "phoxif:date-estimated",
+        "phoxif:date-src:filename-epoch",
+    ]
+
+    write_tags(
+        photo,
+        {
+            "DateTimeOriginal": "2024:01:15 17:50:45",
+            "CreateDate": "2024:01:15 17:50:45",
+            "IPTC:Keywords": keywords,
+            "XMP-dc:Subject": keywords,
+        },
+    )
+
+    result = subprocess.run(
+        ["exiftool", "-j", "-DateTimeOriginal", "-Keywords", "-Subject", str(photo)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)[0]
+    assert payload["DateTimeOriginal"] == "2024:01:15 17:50:45"
+    assert payload["Keywords"] == keywords
+    assert payload["Subject"] == keywords
+
+
 def test_corrupt_mp4_is_rejected_even_when_container_is_recognized(tmp_path: Path):
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
@@ -122,3 +157,57 @@ def test_heic_validation_requires_real_decode(monkeypatch, tmp_path: Path):
         _validate_file(heic)
 
     assert any(command[1:4] == ["-s", "format", "png"] for command in commands)
+
+
+def test_quicktime_date_uses_explicit_timezone_and_keeps_xmp_provenance(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=32x32:d=0.2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+            str(video),
+        ],
+        check=True,
+    )
+    keywords = ["phoxif:date-estimated", "phoxif:date-src:filename-date"]
+
+    write_tags(
+        video,
+        {
+            "QuickTime:CreateDate": "2024:01:15 10:00:00",
+            "XMP-dc:Subject": keywords,
+        },
+        quicktime_utc=True,
+        timezone_name="Pacific/Honolulu",
+    )
+
+    local = read_tags(
+        video,
+        ["QuickTime:CreateDate", "XMP-dc:Subject"],
+        quicktime_utc=True,
+        timezone_name="Pacific/Honolulu",
+    )
+    utc = read_tags(
+        video,
+        ["QuickTime:CreateDate"],
+        quicktime_utc=True,
+        timezone_name="UTC",
+    )
+    assert local["QuickTime:CreateDate"].startswith("2024:01:15 10:00:00")
+    assert local["XMP-dc:Subject"] == keywords
+    assert utc["QuickTime:CreateDate"].startswith("2024:01:15 20:00:00")

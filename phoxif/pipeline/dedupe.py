@@ -304,7 +304,11 @@ def run(
             """
             SELECT files.sha256, COUNT(sightings.id) AS copies
             FROM files JOIN sightings ON sightings.sha256 = files.sha256
-            WHERE files.sha256 IN (SELECT sha256 FROM sightings WHERE batch_id = ?)
+            WHERE files.sha256 IN (
+              SELECT sightings.sha256 FROM batch_items
+              JOIN sightings ON sightings.id = batch_items.sighting_id
+              WHERE batch_items.batch_id = ?
+            )
             GROUP BY files.sha256 HAVING COUNT(sightings.id) > 1
             """,
             (batch_id,),
@@ -317,7 +321,8 @@ def run(
             """
             SELECT DISTINCT files.sha256 FROM files
             JOIN sightings ON sightings.sha256 = files.sha256
-            WHERE sightings.batch_id = ? AND files.status = 'ingested'
+            JOIN batch_items ON batch_items.sighting_id = sightings.id
+            WHERE batch_items.batch_id = ? AND files.status = 'ingested'
               AND files.media_type = 'image' AND files.phash IS NOT NULL
             """,
             (batch_id,),

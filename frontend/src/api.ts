@@ -1,4 +1,4 @@
-import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary, DedupeResolution, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
+import type { ScanResult, Session, FileInfo, SimilarGroup, RenamePreview, DateMismatch, NonPhotoItem, IntakeMode, SourceSummary, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, DedupeResolution, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
 
 const BASE_URL = '/api';
 
@@ -233,6 +233,20 @@ export async function approvePendingTrash(operationIds: number[]): Promise<Trash
   return request('/intake/trash/execute', {
     method: 'POST',
     body: JSON.stringify({ operation_ids: operationIds, approved: true }),
+  });
+}
+
+export async function planDates(batchIds: string[]): Promise<DatePlanSummary> {
+  return request<DatePlanSummary>('/intake/enrich/dates/plan', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds }),
+  });
+}
+
+export async function executeDates(batchIds: string[]): Promise<DateExecutionSummary> {
+  return request<DateExecutionSummary>('/intake/enrich/dates/execute', {
+    method: 'POST',
+    body: JSON.stringify({ batch_ids: batchIds }),
   });
 }
 

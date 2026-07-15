@@ -8,8 +8,10 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -29,6 +31,7 @@ from phoxif.config import load_config
 from phoxif.pipeline.catalog import DEFAULT_CATALOG_PATH, Catalog
 from phoxif.pipeline.census import IntakeMode, scan_sources
 from phoxif.pipeline.dedupe import resolve_review, run as run_dedupe
+from phoxif.pipeline.enrich import execute_dates, plan_dates
 from phoxif.pipeline.ingest import DEFAULT_STAGING_ROOT, run as run_ingest
 from phoxif.pipeline.trash import execute as execute_pipeline_trash
 from phoxif.pipeline.trash import pending as pending_pipeline_trash
@@ -91,6 +94,12 @@ class PipelineTrashExecuteRequest(BaseModel):
 
     operation_ids: list[int]
     approved: bool = False
+
+
+class IntakeDateRequest(BaseModel):
+    """Selected ingest batches for date planning or execution."""
+
+    batch_ids: list[str]
 
 
 class TrashRequest(BaseModel):
@@ -368,6 +377,29 @@ def _dedupe_thresholds() -> tuple[int, int]:
     return config["dedupe_auto_threshold"], config["dedupe_review_threshold"]
 
 
+def _date_settings() -> tuple[Path, str, datetime, set[str]]:
+    """Load date policy with safe defaults when private config is absent."""
+    catalog_db, _staging_root = _pipeline_storage_paths()
+    try:
+        config = load_config()
+        timezone_name = str(config["default_timezone"])
+        earliest_text = str(config["date_earliest"])
+        mtime_sources = set(config["date_mtime_source_ids"])
+    except (FileNotFoundError, ValueError):
+        timezone_name = "Asia/Taipei"
+        earliest_text = "1995-01-01"
+        mtime_sources = set()
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as error:
+        raise ValueError(f"Unknown default_timezone: {timezone_name}") from error
+    try:
+        earliest = datetime.fromisoformat(earliest_text).replace(tzinfo=zone)
+    except ValueError as error:
+        raise ValueError(f"Invalid date_earliest: {earliest_text}") from error
+    return catalog_db, timezone_name, earliest, mtime_sources
+
+
 @router.post("/intake/ingest", response_model=ApiResponse)
 async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     """Create verified working copies and permanent catalog evidence."""
@@ -397,9 +429,7 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
             )
             batches.append(result.to_dict())
         except Exception as error:
-            failures.append(
-                {"source_path": str(source), "label": source.name, "error": str(error)}
-            )
+            failures.append({"source_path": str(source), "label": source.name, "error": str(error)})
 
     totals = {
         key: sum(int(batch[key]) for batch in batches)
@@ -499,7 +529,9 @@ async def api_pipeline_trash_pending(req: PipelineTrashPendingRequest) -> ApiRes
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
     catalog_db, _staging_root = _pipeline_storage_paths()
     try:
-        items = [item.to_dict() for item in pending_pipeline_trash(catalog_db, batch_ids=req.batch_ids)]
+        items = [
+            item.to_dict() for item in pending_pipeline_trash(catalog_db, batch_ids=req.batch_ids)
+        ]
     except (OSError, RuntimeError, ValueError) as error:
         return ApiResponse(ok=False, error=str(error))
     return ApiResponse(ok=True, data={"items": items})
@@ -518,6 +550,89 @@ async def api_pipeline_trash_execute(req: PipelineTrashExecuteRequest) -> ApiRes
     except (OSError, PermissionError, RuntimeError, ValueError) as error:
         return ApiResponse(ok=False, error=str(error))
     return ApiResponse(ok=True, data=result)
+
+
+def _plan_date_batches(batch_ids: list[str]) -> tuple[list[Any], list[dict[str, str]]]:
+    catalog_db, timezone_name, earliest, mtime_sources = _date_settings()
+    plans = []
+    failures: list[dict[str, str]] = []
+    seen_sha256: set[str] = set()
+    now = datetime.now(ZoneInfo(timezone_name))
+    with Catalog(catalog_db) as catalog:
+        source_by_batch = (
+            {
+                str(row["batch_id"]): str(row["source_id"])
+                for row in catalog.connection.execute(
+                    "SELECT batch_id, source_id FROM batches WHERE batch_id IN ({})".format(
+                        ",".join("?" for _ in batch_ids)
+                    ),
+                    batch_ids,
+                ).fetchall()
+            }
+            if batch_ids
+            else {}
+        )
+    for batch_id in list(dict.fromkeys(batch_ids)):
+        try:
+            plan = plan_dates(
+                batch_id,
+                catalog_db=catalog_db,
+                timezone_name=timezone_name,
+                earliest=earliest,
+                now=now,
+                allow_mtime=source_by_batch.get(batch_id) in mtime_sources,
+            )
+            unique_items = []
+            for item in plan.items:
+                if item.sha256 in seen_sha256:
+                    continue
+                seen_sha256.add(item.sha256)
+                unique_items.append(item)
+            plan.items[:] = unique_items
+            plans.append(plan)
+        except (KeyError, OSError, RuntimeError, ValueError) as error:
+            failures.append({"batch_id": batch_id, "error": str(error)})
+    return plans, failures
+
+
+@router.post("/intake/enrich/dates/plan", response_model=ApiResponse)
+async def api_intake_date_plan(req: IntakeDateRequest) -> ApiResponse:
+    """Return explainable date decisions without modifying media."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    try:
+        plans, failures = _plan_date_batches(req.batch_ids)
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            "complete": not failures,
+            "plans": [plan.to_dict() for plan in plans],
+            "failures": failures,
+        },
+    )
+
+
+@router.post("/intake/enrich/dates/execute", response_model=ApiResponse)
+async def api_intake_date_execute(req: IntakeDateRequest) -> ApiResponse:
+    """Execute freshly recomputed date plans on catalog-scoped working files."""
+    if not req.batch_ids:
+        return ApiResponse(ok=False, error="Choose at least one ingest batch")
+    try:
+        catalog_db, _timezone_name, _earliest, _mtime_sources = _date_settings()
+        plans, failures = _plan_date_batches(req.batch_ids)
+        results = [execute_dates(plan, catalog_db=catalog_db) for plan in plans]
+    except (OSError, RuntimeError, ValueError) as error:
+        return ApiResponse(ok=False, error=str(error))
+    return ApiResponse(
+        ok=True,
+        data={
+            "complete": not failures and all(not result["failed"] for result in results),
+            "results": results,
+            "failures": failures,
+        },
+    )
 
 
 @router.get("/scan/status", response_model=ApiResponse)
@@ -551,9 +666,7 @@ async def api_trash_duplicates(req: TrashRequest) -> ApiResponse:
 
     resolved_files = [Path(path).expanduser().resolve() for path in req.files]
     if any(
-        not any(
-            file_path.is_relative_to(Path(cached_path)) for cached_path in _scan_cache
-        )
+        not any(file_path.is_relative_to(Path(cached_path)) for cached_path in _scan_cache)
         for file_path in resolved_files
     ):
         return ApiResponse(ok=False, error="Every trash path must belong to the current scan")
@@ -747,18 +860,10 @@ def api_test_key(req: TestKeyRequest) -> ApiResponse:
         return ApiResponse(ok=True)
     except Exception as e:
         msg = str(e).lower()
-        if (
-            "400" in msg
-            or "401" in msg
-            or "403" in msg
-            or "api key" in msg
-            or "invalid" in msg
-        ):
+        if "400" in msg or "401" in msg or "403" in msg or "api key" in msg or "invalid" in msg:
             return ApiResponse(ok=False, error="Invalid API key")
         if "network" in msg or "connect" in msg or "timeout" in msg:
-            return ApiResponse(
-                ok=False, error="Network error — check internet connection"
-            )
+            return ApiResponse(ok=False, error="Network error — check internet connection")
         return ApiResponse(ok=False, error="Key test failed — please try again")
 
 
@@ -813,9 +918,7 @@ def api_detect_orientation(req: OrientationDetectRequest) -> Response:
         detect_orientation_batch,
     )
 
-    scanned_count = len(
-        [f for f in files if Path(f["path"]).suffix.lower() in _ALL_SUPPORTED_EXTS]
-    )
+    scanned_count = len([f for f in files if Path(f["path"]).suffix.lower() in _ALL_SUPPORTED_EXTS])
 
     import queue
     import threading
@@ -848,9 +951,7 @@ def api_detect_orientation(req: OrientationDetectRequest) -> Response:
             )
             event_queue.put(f"event: result\ndata: {result_data}\n\n")
         except Exception as e:
-            event_queue.put(
-                f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
-            )
+            event_queue.put(f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n")
         finally:
             event_queue.put(None)  # Signal end
 
@@ -1178,9 +1279,7 @@ async def api_thumbnail(path: str = Query(..., description="File path")) -> Resp
     if not allowed:
         catalog_media = _open_catalog_thumbnail(requested_path, file_path)
         if catalog_media is None:
-            return Response(
-                status_code=403, content="Access denied: path not in scanned directory"
-            )
+            return Response(status_code=403, content="Access denied: path not in scanned directory")
 
     ext = file_path.suffix.lower()
 

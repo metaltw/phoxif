@@ -76,6 +76,12 @@ def test_ingest_rerun_is_idempotent(make_jpeg, tmp_path: Path):
         assert catalog.count("files") == 1
         assert catalog.count("sightings") == 1
         assert catalog.count("batches") == 2
+        assert catalog.count("batch_items") == 2
+        memberships = catalog.connection.execute(
+            "SELECT batch_id FROM batch_items ORDER BY batch_id"
+        ).fetchall()
+
+    assert [row["batch_id"] for row in memberships] == [first.batch_id, second.batch_id]
 
 
 def test_duplicate_status_is_not_restaged_on_rescue_rerun(make_jpeg, tmp_path: Path) -> None:

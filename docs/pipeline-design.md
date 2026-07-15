@@ -28,13 +28,15 @@
 ## 2. 領域模型與狀態機
 
 ```
-Source 1 ── n Batch 1 ── n Sighting n ── 1 File(身分 = sha256)
+Source 1 ── n Batch 1 ── n BatchItem n ── 1 Sighting n ── 1 File
 ```
 
 - **Source**:具名來源(某台電腦、某個舊硬碟資料夾、"wechat-inbox")。
 - **Batch**:一次 ingest 執行,帶 mode(rescue|inbox)與統計。
 - **File**:內容身分,sha256 為主鍵。同內容出現在三台機器 = 1 File、3 Sightings。
 - **Sighting**:某來源某路徑上的一次目擊(證據:原始路徑/檔名/mtime)。
+- **BatchItem**:本次 batch 看見的 sighting；同一來源路徑重掃時新增關聯，
+  不複製 sighting 證據(ADR-0009)。
 
 ### File 狀態機(唯一合法轉移)
 
@@ -52,7 +54,7 @@ ingested ──┤
   → 不建新流程,直接標 duplicate(kept = 既有 archived 檔),源檔進
   待刪批次(§10 破壞性政策)。已是 `duplicate`/處理中 → 只追加 sighting。
 
-## 3. Catalog:SQLite schema v1
+## 3. Catalog:SQLite schema v1 + migrations
 
 檔案位置:`config.yaml: catalog_db`(預設 `~/.phoxif/catalog.db`,gitignored
 範例寫進 config.example.yaml)。`PRAGMA user_version` 管 schema 版本;
@@ -127,6 +129,11 @@ CREATE INDEX idx_files_status ON files(status);
 CREATE INDEX idx_files_phash  ON files(phash);
 CREATE INDEX idx_sightings_sha ON sightings(sha256);
 ```
+
+後續 schema 由 migration 演進：0002 新增 `files.current_sha256/current_size`
+追蹤 metadata 寫入後的工作檔 bytes；0003 新增
+`batch_items(batch_id, sighting_id)`，保存每次重掃的 batch membership。
+`files.sha256` 始終是不可變 ingest 身分(ADR-0009)。
 
 證據欄位(sightings 的 original_*)寫入後唯讀——程式不提供 UPDATE 路徑。
 既有 `.phoxif_log.json` 保留給舊 GUI 單資料夾動作;管線一律寫 `operations`。
@@ -299,6 +306,10 @@ mtime 換成 temp 的——**寫入完成後必須 `os.utime` 還原原 mtime**
   注意 QuickTime:CreateDate 規格上是 UTC(exiftool 需配
   `-api QuickTimeUTC=1` 讀寫),與 EXIF 的在地牆鐘時間不同——
   dates.py 統一處理,呼叫端只見在地時間。
+- ExifTool 的 `QuickTimeUTC=1` 會讀取執行程序的 `TZ`;呼叫時必須把 batch
+  timezone 明確傳入 subprocess 環境，禁止偷用工作站系統時區。MP4/MOV
+  無 legacy IPTC IIM，影片 provenance 寫 `XMP-dc:Subject`；圖片維持
+  IPTC Keywords + XMP Subject 雙寫。
 - 第 4 級(同批鄰檔內插):同 source 同原始資料夾內,原始 mtime 排序後
   被前後兩檔日期夾擠(前後差 ≤ 48h)→ 取線性內插;夾不住 → 落空。
 - 第 5 級(資料夾名日期):對 sighting 的 original_path 各層資料夾段

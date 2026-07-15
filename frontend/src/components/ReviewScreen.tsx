@@ -1,5 +1,5 @@
 import React from 'react';
-import type { DedupePair, DedupeSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
+import type { DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
@@ -13,10 +13,16 @@ interface ReviewScreenProps {
   pendingTrash: PendingTrashItem[];
   trashing: boolean;
   trashSummary: TrashExecutionSummary | null;
+  datePlan: DatePlanSummary | null;
+  dateExecution: DateExecutionSummary | null;
+  dating: boolean;
+  dateError: string | null;
   onIngest: () => void;
   onDedupe: () => void;
   onResolvePair: (batchId: string, pair: DedupePair, keepSha256: string | null) => void;
   onApproveTrash: () => void;
+  onDatePlan: () => void;
+  onDateExecute: () => void;
   onReset: () => void;
   formatSize: (bytes: number) => string;
 }
@@ -33,10 +39,16 @@ export function ReviewScreen({
   pendingTrash,
   trashing,
   trashSummary,
+  datePlan,
+  dateExecution,
+  dating,
+  dateError,
   onIngest,
   onDedupe,
   onResolvePair,
   onApproveTrash,
+  onDatePlan,
+  onDateExecute,
   onReset,
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
@@ -56,6 +68,27 @@ export function ReviewScreen({
   ) ?? [];
   const dedupeFailed = (dedupeSummary?.failures.length ?? 0) > 0;
   const pendingDecisionCount = reviewQueue.length + pendingTrash.length;
+  const dateTotals = datePlan?.plans.reduce(
+    (totals, plan) => ({
+      native: totals.native + (plan.counts['keep-native'] ?? 0),
+      estimated: totals.estimated + (plan.counts['write-estimated'] ?? 0),
+      quarantine: totals.quarantine + (plan.counts.quarantine ?? 0),
+      skipped: totals.skipped + (plan.counts.skip ?? 0),
+    }),
+    { native: 0, estimated: 0, quarantine: 0, skipped: 0 },
+  );
+  const quarantineItems = datePlan?.plans.flatMap(plan =>
+    plan.items.filter(item => item.action === 'quarantine'),
+  ) ?? [];
+  const dateBatchFailures = [
+    ...(datePlan?.failures ?? []),
+    ...(dateExecution?.failures ?? []),
+  ];
+  const dateItemFailures = dateExecution?.results.flatMap(result =>
+    result.results.filter(item => item.status === 'failed'),
+  ) ?? [];
+  const dateFailed = dateBatchFailures.length > 0 || dateItemFailures.length > 0
+    || datePlan?.complete === false || dateExecution?.complete === false;
   const duplicateCopies = scanResult.duplicates.reduce(
     (sum, group) => sum + Math.max(0, group.files.length - 1),
     0,
@@ -80,7 +113,11 @@ export function ReviewScreen({
         <header className="intake-review-head">
           <div>
             <div className="result-status"><span>✓</span> {ingestSummary
-              ? trashSummary && trashSummary.completed > 0
+              ? dateExecution?.complete
+                ? quarantineItems.length > 0
+                  ? `日期分級完成 · ${quarantineItems.length} 筆留待人工確認`
+                  : '日期整理完成 · 估計值都有可搜尋溯源標記'
+                : trashSummary && trashSummary.completed > 0
                 ? `整理完成 · ${trashSummary.completed} 筆批准項目已進系統垃圾桶`
                 : ingestSummary.complete
                   ? '安全登記完成 · 原始來源保持不動'
@@ -143,7 +180,9 @@ export function ReviewScreen({
           <div className="section-title-row">
             <div>
               <h2 id="decision-title">phoxif 會怎麼處理</h2>
-              <p>{trashSummary && trashSummary.completed > 0
+              <p>{dateExecution
+                ? '日期已依證據分級；自動補值只寫入安全工作檔並留下溯源，待確認項目保持不動；尚未碰 NAS。'
+                : trashSummary && trashSummary.completed > 0
                 ? '已依你的明確批准，將確認的重複檔移到系統垃圾桶；未批准的來源檔保持原位。'
                 : '目前只建立工作副本與追蹤紀錄；不刪來源、不寫 metadata、不碰 NAS。'}</p>
             </div>
@@ -172,7 +211,7 @@ export function ReviewScreen({
             </div>
           </div>
           <p className="intake-scope-note">
-            此里程碑先保全照片／影片本體與來源證據；Live Photo 配對、AAE sidecar、聊天日期修復會在後續整理階段完成，現在不會假裝已處理。
+            Live Photo 配對與 AAE sidecar 仍保留來源證據；聊天照片日期會依信心階梯補齊，估計值必帶 phoxif 溯源標記，不確定者進人工佇列。
           </p>
         </section>
 
@@ -255,6 +294,65 @@ export function ReviewScreen({
           </div>
         )}
 
+        {datePlan && dateTotals && pendingDecisionCount === 0 && (
+          <section className="dedupe-result" aria-label="日期證據結果">
+            <h2>日期證據已分級</h2>
+            <p>原生日期不改；檔名／聊天時間／資料夾線索會寫進工作檔並標記來源，落空或可疑者不猜。</p>
+            <div className="dedupe-result-grid">
+              <div><strong>{dateTotals.native}</strong><span>原生日期保留</span></div>
+              <div><strong>{dateTotals.estimated}</strong><span>可補齊並標記</span></div>
+              <div><strong>{dateTotals.quarantine}</strong><span>需要人工確認</span></div>
+              <div><strong>{dateTotals.skipped}</strong><span>已完成／不適用</span></div>
+            </div>
+            {dateExecution && (
+              <div className="manual-review-note">
+                已處理 {dateExecution.results.reduce((sum, result) => sum + result.completed, 0)} 筆；
+                {dateExecution.results.reduce((sum, result) => sum + result.failed, 0)} 筆失敗。
+              </div>
+            )}
+            {dateFailed && (
+              <div className="date-failure" role="alert">
+                <strong>日期階段尚未完成</strong>
+                {dateBatchFailures.map(failure => (
+                  <small key={`${failure.batch_id}-${failure.error}`}>{failure.batch_id}: {failure.error}</small>
+                ))}
+                {dateItemFailures.map(failure => (
+                  <small key={`${failure.sha256}-${failure.error ?? 'failed'}`}>
+                    {failure.sha256.slice(0, 10)}…: {failure.error ?? '處理失敗'}
+                  </small>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {quarantineItems.length > 0 && pendingDecisionCount === 0 && (
+          <section className="date-quarantine" aria-label="日期待人工確認">
+            <div className="section-title-row">
+              <div>
+                <h2>這些照片沒有可信日期</h2>
+                <p>phoxif 沒有猜，也沒有覆寫。它們會留在人工佇列，歸檔時先跳過。</p>
+              </div>
+              <span className="read-only-badge">{quarantineItems.length} 筆待確認</span>
+            </div>
+            <details>
+              <summary>查看待確認照片</summary>
+              <div className="date-quarantine-list">
+                {quarantineItems.map(item => (
+                  <div key={`${item.batch_id}-${item.sha256}`}>
+                    <strong>{item.name}</strong>
+                    <small>{item.reason === 'suspicious-native-date'
+                      ? '原生日期可疑，因此未覆寫'
+                      : item.reason === 'missing-safe-working-copy'
+                        ? '找不到可安全修改的工作副本'
+                        : '檔名、鄰近照片、資料夾與已核准 mtime 都沒有可信線索'}</small>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </section>
+        )}
+
         {ingestSummary ? (
           <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
             <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
@@ -283,8 +381,20 @@ export function ReviewScreen({
             </div>
             <button
               className="btn-secondary"
-              onClick={ingestFailed ? onIngest : dedupeSummary ? (dedupeFailed ? onDedupe : onReset) : onDedupe}
-              disabled={ingesting || deduping || (dedupeSummary !== null && pendingDecisionCount > 0)}
+              onClick={ingestFailed
+                ? onIngest
+                : !dedupeSummary || dedupeFailed
+                  ? onDedupe
+                  : pendingDecisionCount > 0
+                    ? undefined
+                    : !datePlan
+                      ? onDatePlan
+                      : dateFailed
+                        ? dateExecution?.complete === false ? onDateExecute : onDatePlan
+                      : dateExecution?.complete || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
+                        ? onReset
+                        : onDateExecute}
+              disabled={ingesting || deduping || dating || (dedupeSummary !== null && pendingDecisionCount > 0)}
             >
               {ingestFailed
                 ? (ingesting ? '正在安全重試…' : '安全重試')
@@ -293,12 +403,23 @@ export function ReviewScreen({
                     ? `先完成上方 ${pendingDecisionCount} 項決定`
                     : dedupeFailed
                       ? '安全重試比對'
-                      : '整理下一批'
+                      : dating
+                        ? '正在整理日期證據…'
+                        : !datePlan
+                          ? '檢查聊天照片日期 →'
+                          : dateFailed
+                            ? '安全重試日期階段'
+                          : dateExecution?.complete || (dateTotals?.estimated ?? 0) + (dateTotals?.quarantine ?? 0) === 0
+                            ? quarantineItems.length > 0
+                              ? `保留 ${quarantineItems.length} 筆待確認，整理下一批`
+                              : '整理下一批'
+                            : `套用 ${dateTotals?.estimated ?? 0} 筆日期並保留 ${dateTotals?.quarantine ?? 0} 筆待確認`
                   : deduping
                     ? '正在跨來源比對…'
                     : '檢查重複與例外 →'}
             </button>
             {dedupeError && <small>{dedupeError}</small>}
+            {dateError && <small>{dateError}</small>}
           </div>
         ) : (
           <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>

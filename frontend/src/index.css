@@ -312,6 +312,14 @@ button { font-family: inherit; }
 .dedupe-result-grid strong { color: var(--bright); font-size: 20px; }
 .dedupe-result-grid span, .manual-review-note { color: var(--dim); font-size: 10px; }
 .manual-review-note { margin-top: 10px; color: var(--orange); }
+.date-failure { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--red); border-radius: 8px; color: var(--red); }
+.date-failure strong, .date-failure small { display: block; }
+.date-failure small { margin-top: 5px; overflow-wrap: anywhere; }
+.date-quarantine { margin-top: 18px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg2); }
+.date-quarantine summary { margin-top: 12px; color: var(--orange); cursor: pointer; font-weight: 700; }
+.date-quarantine-list { display: grid; gap: 8px; margin-top: 12px; }
+.date-quarantine-list div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 12px; border-radius: 8px; background: var(--bg3); }
+.date-quarantine-list small { color: var(--dim); text-align: right; }
 .pair-review, .trash-approval { margin-top: 20px; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg2); }
 .pair-review-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg3); }
 .pair-distance { margin-bottom: 10px; color: var(--dim); font-size: 10px; }

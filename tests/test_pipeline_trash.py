@@ -97,6 +97,28 @@ def test_trash_refuses_content_changed_after_review(monkeypatch, tmp_path: Path)
     assert len(pending(database)) == 1
 
 
+def test_trash_accepts_cataloged_post_metadata_content_hash(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    photo = tmp_path / "enriched-duplicate.jpg"
+    photo.write_bytes(b"ingest-content")
+    database = tmp_path / "catalog.db"
+    operation_id = _queued_operation(database, photo)
+    photo.write_bytes(b"post-metadata-content")
+    current_hash = hashlib.sha256(photo.read_bytes()).hexdigest()
+    with Catalog(database) as catalog:
+        stable_sha = str(catalog.connection.execute("SELECT sha256 FROM files").fetchone()[0])
+        catalog.update_current_content(stable_sha, current_hash, photo.stat().st_size)
+    called: list[str] = []
+    monkeypatch.setattr("phoxif.pipeline.trash.send2trash", called.append)
+
+    result = execute(database, [operation_id], approved=True)
+
+    assert result["completed"] == 1
+    assert called == [str(photo)]
+
+
 def test_trash_refuses_symlink_even_when_target_matches(monkeypatch, tmp_path: Path) -> None:
     photo = tmp_path / "duplicate.jpg"
     photo.write_bytes(b"reviewed-content")

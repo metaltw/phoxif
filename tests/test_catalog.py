@@ -16,7 +16,7 @@ def test_catalog_migrates_and_enables_integrity_guards(tmp_path: Path):
         journal_mode = catalog.connection.execute("PRAGMA journal_mode").fetchone()[0]
         foreign_keys = catalog.connection.execute("PRAGMA foreign_keys").fetchone()[0]
 
-    assert version == 1
+    assert version == 3
     assert journal_mode == "wal"
     assert foreign_keys == 1
 
@@ -51,6 +51,38 @@ def test_catalog_enforces_file_state_machine(tmp_path: Path):
             catalog.transition("a" * 64, "unique")
 
 
+def test_catalog_preserves_ingest_identity_while_tracking_current_bytes(tmp_path: Path):
+    database = tmp_path / "catalog.db"
+    ingest_sha = "1" * 64
+    current_sha = "2" * 64
+    with Catalog(database) as catalog:
+        catalog.upsert_file(
+            sha256=ingest_sha,
+            size=10,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+        catalog.update_current_content(ingest_sha, current_sha, 14)
+
+        record, created = catalog.upsert_file(
+            sha256=current_sha,
+            size=14,
+            ext=".jpg",
+            media_type="image",
+            phash=None,
+            width=None,
+            height=None,
+        )
+
+    assert created is False
+    assert record["sha256"] == ingest_sha
+    assert record["current_sha256"] == current_sha
+    assert record["current_size"] == 14
+
+
 def test_sighting_evidence_cannot_be_duplicated(tmp_path: Path):
     database = tmp_path / "catalog.db"
     source_file = tmp_path / "photo.jpg"
@@ -81,6 +113,7 @@ def test_sighting_evidence_cannot_be_duplicated(tmp_path: Path):
         assert catalog.add_sighting(**kwargs) is True
         assert catalog.add_sighting(**kwargs) is False
         assert catalog.count("sightings") == 1
+        assert catalog.count("batch_items") == 1
 
 
 def test_database_rejects_sighting_without_file(tmp_path: Path):
@@ -105,7 +138,7 @@ def test_failed_migration_rolls_back_schema_and_version(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.Error):
             catalog._apply_migration(
                 "CREATE TABLE should_rollback(value TEXT); INVALID SQL;",
-                2,
+                4,
             )
 
         version = catalog.connection.execute("PRAGMA user_version").fetchone()[0]
@@ -113,5 +146,5 @@ def test_failed_migration_rolls_back_schema_and_version(tmp_path: Path) -> None:
             "SELECT 1 FROM sqlite_master WHERE name = 'should_rollback'"
         ).fetchone()
 
-    assert version == 1
+    assert version == 3
     assert table is None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -36,7 +37,14 @@ class SafeEditError(RuntimeError):
     """Raised when a temporary media edit cannot be proven safe."""
 
 
-def read_tags(path: Path, tags: list[str], *, numeric: bool = False) -> dict[str, Any]:
+def read_tags(
+    path: Path,
+    tags: list[str],
+    *,
+    numeric: bool = False,
+    quicktime_utc: bool = False,
+    timezone_name: str | None = None,
+) -> dict[str, Any]:
     """Read selected tags with ExifTool.
 
     Args:
@@ -48,6 +56,8 @@ def read_tags(path: Path, tags: list[str], *, numeric: bool = False) -> dict[str
         Mapping from requested tag name to value or ``None``.
     """
     command = ["exiftool", "-j"]
+    if quicktime_utc:
+        command.extend(["-api", "QuickTimeUTC=1"])
     if numeric:
         command.append("-n")
     command.extend(f"-{tag}" for tag in tags)
@@ -59,6 +69,7 @@ def read_tags(path: Path, tags: list[str], *, numeric: bool = False) -> dict[str
             text=True,
             timeout=30,
             check=False,
+            env=_timezone_environment(timezone_name),
         )
     except FileNotFoundError as error:
         raise SafeEditError("exiftool not found") from error
@@ -70,7 +81,7 @@ def read_tags(path: Path, tags: list[str], *, numeric: bool = False) -> dict[str
         payload = json.loads(result.stdout)[0]
     except (IndexError, KeyError, json.JSONDecodeError) as error:
         raise SafeEditError("exiftool returned invalid JSON") from error
-    return {tag: payload.get(tag) for tag in tags}
+    return {tag: payload.get(tag, payload.get(tag.rsplit(":", 1)[-1])) for tag in tags}
 
 
 def _values_match(actual: Any, expected: Any) -> bool:
@@ -79,7 +90,21 @@ def _values_match(actual: Any, expected: Any) -> bool:
         return True
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
         return abs(float(actual) - float(expected)) < 1e-9
+    if (
+        isinstance(actual, str)
+        and isinstance(expected, str)
+        and actual.startswith(expected)
+        and re.fullmatch(r"[+-]\d{2}:\d{2}", actual[len(expected) :])
+    ):
+        return True
     return str(actual) == str(expected)
+
+
+def _timezone_environment(timezone_name: str | None) -> dict[str, str] | None:
+    """Pin ExifTool's QuickTime UTC conversion to the batch timezone."""
+    if timezone_name is None:
+        return None
+    return {**os.environ, "TZ": timezone_name}
 
 
 def _validate_file(path: Path) -> None:
@@ -190,6 +215,8 @@ def edit_file(
     *,
     tags: Mapping[str, Any] | None = None,
     numeric: bool = False,
+    quicktime_utc: bool = False,
+    timezone_name: str | None = None,
 ) -> None:
     """Edit a temporary copy, verify it, then atomically replace the original.
 
@@ -221,15 +248,26 @@ def edit_file(
         shutil.copy2(path, temp_path)
         editor(temp_path)
         if tags:
-            _apply_tags(temp_path, tags, numeric=numeric)
+            _apply_tags(
+                temp_path,
+                tags,
+                numeric=numeric,
+                quicktime_utc=quicktime_utc,
+                timezone_name=timezone_name,
+            )
         _validate_file(temp_path)
 
         if tags:
             expected_tags = {
-                tag: None if expected == "" else expected
-                for tag, expected in tags.items()
+                tag: None if expected == "" else expected for tag, expected in tags.items()
             }
-            actual_tags = read_tags(temp_path, list(tags), numeric=numeric)
+            actual_tags = read_tags(
+                temp_path,
+                list(tags),
+                numeric=numeric,
+                quicktime_utc=quicktime_utc,
+                timezone_name=timezone_name,
+            )
             for tag, expected in expected_tags.items():
                 if not _values_match(actual_tags.get(tag), expected):
                     raise SafeEditError(
@@ -247,12 +285,26 @@ def edit_file(
         temp_path.unlink(missing_ok=True)
 
 
-def _apply_tags(path: Path, tags: Mapping[str, Any], *, numeric: bool) -> None:
+def _apply_tags(
+    path: Path,
+    tags: Mapping[str, Any],
+    *,
+    numeric: bool,
+    quicktime_utc: bool,
+    timezone_name: str | None,
+) -> None:
     """Write tags in-place to a temporary file owned by this module."""
     command = ["exiftool", "-overwrite_original"]
+    if quicktime_utc:
+        command.extend(["-api", "QuickTimeUTC=1"])
     if numeric:
         command.append("-n")
-    command.extend(f"-{tag}={value}" for tag, value in tags.items())
+    for tag, value in tags.items():
+        if isinstance(value, (list, tuple)):
+            command.append(f"-{tag}=")
+            command.extend(f"-{tag}+={item}" for item in value)
+        else:
+            command.append(f"-{tag}={value}")
     command.append(str(path))
     try:
         result = subprocess.run(
@@ -261,6 +313,7 @@ def _apply_tags(path: Path, tags: Mapping[str, Any], *, numeric: bool) -> None:
             text=True,
             timeout=30,
             check=False,
+            env=_timezone_environment(timezone_name),
         )
     except FileNotFoundError as error:
         raise SafeEditError("exiftool not found") from error
@@ -275,6 +328,8 @@ def write_tags(
     tags: Mapping[str, Any],
     *,
     numeric: bool = False,
+    quicktime_utc: bool = False,
+    timezone_name: str | None = None,
 ) -> dict[str, Any]:
     """Safely write and read back metadata tags.
 
@@ -288,7 +343,20 @@ def write_tags(
     """
     if not tags:
         return {}
-    old_values = read_tags(path, list(tags), numeric=numeric)
+    old_values = read_tags(
+        path,
+        list(tags),
+        numeric=numeric,
+        quicktime_utc=quicktime_utc,
+        timezone_name=timezone_name,
+    )
 
-    edit_file(path, lambda _temp_path: None, tags=tags, numeric=numeric)
+    edit_file(
+        path,
+        lambda _temp_path: None,
+        tags=tags,
+        numeric=numeric,
+        quicktime_utc=quicktime_utc,
+        timezone_name=timezone_name,
+    )
     return old_values

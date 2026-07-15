@@ -19,6 +19,9 @@ Metal 拍板:寧可寫入近似日期讓 timeline 正確,但必須可辨識、�
     `phoxif:date-estimated`、`phoxif:date-src:<heuristic>`
     (heuristic ∈ filename-epoch / filename-date / batch-interp / folder-name / ingest-mtime)
   - 精度不足時再加 `phoxif:date-precision:<day|month|year>`
+- MP4/MOV 容器不支援 legacy IPTC IIM;影片以 `XMP-dc:Subject` 保存同一組
+  provenance keywords，圖片仍同時寫 IPTC 與 XMP。影片必須有整合測試證明
+  QuickTime 日期與 XMP 標記都能 read-back。
 - catalog(ADR-0002)記:寫入值、heuristic、寫入前原值。
 - 已有**可信原生 EXIF 日期的檔案一律不碰**(第 1 級,不寫不標)。
 

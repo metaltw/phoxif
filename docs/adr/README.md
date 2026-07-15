@@ -14,6 +14,7 @@
 | [0006](0006-exif-write-safety.md) | EXIF 寫入單一 choke point + grep 閘門 | Accepted |
 | [0007](0007-legacy-cli-disposition.md) | 四支 legacy CLI 的處置(凍結/修復/吸收) | Accepted |
 | [0008](0008-dual-mode-automation-policy.md) | 雙模式(救援+進水口)與自動化政策 | Accepted |
+| [0009](0009-stable-content-identity.md) | metadata 寫入後維持 ingest 身分與重掃批次成員 | Accepted |
 
 ## 格式
 

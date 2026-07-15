@@ -4,6 +4,9 @@ catalog_db: "~/.phoxif/catalog.db"
 staging_dir: "~/.phoxif/staging"
 inbox_sources: []
 default_timezone: "Asia/Taipei"
+date_earliest: "1995-01-01"
+# Enable mtime fallback only after reviewing that source's census evidence.
+date_mtime_source_ids: []
 folder_name_as_tag: false
 dedupe_auto_threshold: 4
 dedupe_review_threshold: 10

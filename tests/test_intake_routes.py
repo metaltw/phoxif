@@ -245,6 +245,49 @@ def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: 
     assert empty_pending.ok is False
 
 
+def test_date_plan_and_execute_routes_use_fresh_server_side_plan(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fake_plan = SimpleNamespace(
+        to_dict=lambda: {
+            "batch_id": "batch-1",
+            "items": [{"action": "write-estimated"}],
+            "counts": {"write-estimated": 1},
+        }
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_plan_date_batches",
+        lambda batch_ids: ([fake_plan], []) if batch_ids == ["batch-1"] else ([], []),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_date_settings",
+        lambda: (tmp_path / "catalog.db", "Asia/Taipei", object(), set()),
+    )
+
+    def fake_execute(plan, *, catalog_db):
+        calls.append(f"{plan.to_dict()['batch_id']}:{catalog_db.name}")
+        return {"batch_id": "batch-1", "failed": 0, "completed": 1, "results": []}
+
+    monkeypatch.setattr(routes, "execute_dates", fake_execute)
+
+    plan_response = asyncio.run(
+        routes.api_intake_date_plan(routes.IntakeDateRequest(batch_ids=["batch-1"]))
+    )
+    execute_response = asyncio.run(
+        routes.api_intake_date_execute(routes.IntakeDateRequest(batch_ids=["batch-1"]))
+    )
+
+    assert plan_response.ok is True
+    assert plan_response.data["plans"][0]["counts"]["write-estimated"] == 1
+    assert execute_response.ok is True
+    assert execute_response.data["complete"] is True
+    assert calls == ["batch-1:catalog.db"]
+
+
 def test_thumbnail_allows_catalog_working_copy_but_not_arbitrary_file(
     monkeypatch,
     tmp_path: Path,

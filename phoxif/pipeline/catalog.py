@@ -21,7 +21,7 @@ FileStatus = Literal[
     "duplicate",
 ]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 DEFAULT_CATALOG_PATH = Path("~/.phoxif/catalog.db").expanduser()
 _SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -114,9 +114,7 @@ class Catalog:
         ).fetchone()
         if existing is not None:
             if existing["kind"] != kind:
-                raise ValueError(
-                    f"Source {source_id} is already registered as {existing['kind']}"
-                )
+                raise ValueError(f"Source {source_id} is already registered as {existing['kind']}")
             if existing["label"] != label:
                 with self.transaction():
                     self.connection.execute(
@@ -172,8 +170,13 @@ class Catalog:
 
     def file(self, sha256: str) -> sqlite3.Row | None:
         """Return one content identity."""
+        return self.connection.execute("SELECT * FROM files WHERE sha256 = ?", (sha256,)).fetchone()
+
+    def file_by_content_hash(self, sha256: str) -> sqlite3.Row | None:
+        """Resolve either the immutable ingest identity or current working bytes."""
         return self.connection.execute(
-            "SELECT * FROM files WHERE sha256 = ?", (sha256,)
+            "SELECT * FROM files WHERE sha256 = ? OR current_sha256 = ? LIMIT 1",
+            (sha256, sha256),
         ).fetchone()
 
     def upsert_file(
@@ -188,9 +191,14 @@ class Catalog:
         height: int | None,
     ) -> tuple[sqlite3.Row, bool]:
         """Insert a content identity once and return ``(row, created)``."""
-        existing = self.file(sha256)
+        existing = self.file_by_content_hash(sha256)
         if existing is not None:
-            if int(existing["size"]) != size:
+            expected_size = (
+                int(existing["size"])
+                if existing["sha256"] == sha256
+                else int(existing["current_size"])
+            )
+            if expected_size != size:
                 raise RuntimeError(f"SHA-256 collision or catalog corruption for {sha256}")
             return existing, False
         now = utc_now()
@@ -199,14 +207,40 @@ class Catalog:
                 """
                 INSERT INTO files(
                   sha256, size, ext, media_type, phash, width, height,
+                  current_sha256, current_size,
                   status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ingested', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ingested', ?, ?)
                 """,
-                (sha256, size, ext, media_type, phash, width, height, now, now),
+                (
+                    sha256,
+                    size,
+                    ext,
+                    media_type,
+                    phash,
+                    width,
+                    height,
+                    sha256,
+                    size,
+                    now,
+                    now,
+                ),
             )
         created = self.file(sha256)
         assert created is not None
         return created, True
+
+    def update_current_content(self, sha256: str, current_sha256: str, size: int) -> None:
+        """Record verified post-metadata bytes without changing ingest identity."""
+        with self.transaction():
+            cursor = self.connection.execute(
+                """
+                UPDATE files SET current_sha256 = ?, current_size = ?, updated_at = ?
+                WHERE sha256 = ?
+                """,
+                (current_sha256, size, utc_now(), sha256),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"Unknown file: {sha256}")
 
     def add_sighting(
         self,
@@ -241,6 +275,21 @@ class Catalog:
                     utc_now(),
                 ),
             )
+            sighting = self.connection.execute(
+                """
+                SELECT id FROM sightings
+                WHERE sha256 = ? AND source_id = ? AND original_path = ?
+                """,
+                (sha256, source_id, str(original_path)),
+            ).fetchone()
+            assert sighting is not None
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO batch_items(batch_id, sighting_id)
+                VALUES (?, ?)
+                """,
+                (batch_id, sighting["id"]),
+            )
         return cursor.rowcount == 1
 
     def record_ingest(
@@ -262,11 +311,18 @@ class Catalog:
         staging_path: Path | None,
     ) -> tuple[sqlite3.Row, bool, bool]:
         """Atomically persist one content identity and its source evidence."""
-        existing = self.file(sha256)
-        if existing is not None and int(existing["size"]) != size:
-            raise RuntimeError(f"SHA-256 collision or catalog corruption for {sha256}")
+        existing = self.file_by_content_hash(sha256)
+        if existing is not None:
+            expected_size = (
+                int(existing["size"])
+                if existing["sha256"] == sha256
+                else int(existing["current_size"])
+            )
+            if expected_size != size:
+                raise RuntimeError(f"SHA-256 collision or catalog corruption for {sha256}")
 
         created = existing is None
+        identity_sha256 = sha256 if existing is None else str(existing["sha256"])
         now = utc_now()
         with self.transaction():
             if created:
@@ -274,10 +330,23 @@ class Catalog:
                     """
                     INSERT INTO files(
                       sha256, size, ext, media_type, phash, width, height,
+                      current_sha256, current_size,
                       status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ingested', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ingested', ?, ?)
                     """,
-                    (sha256, size, ext, media_type, phash, width, height, now, now),
+                    (
+                        sha256,
+                        size,
+                        ext,
+                        media_type,
+                        phash,
+                        width,
+                        height,
+                        sha256,
+                        size,
+                        now,
+                        now,
+                    ),
                 )
             cursor = self.connection.execute(
                 """
@@ -287,7 +356,7 @@ class Catalog:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    sha256,
+                    identity_sha256,
                     source_id,
                     batch_id,
                     str(original_path),
@@ -298,7 +367,22 @@ class Catalog:
                     now,
                 ),
             )
-        record = self.file(sha256)
+            sighting = self.connection.execute(
+                """
+                SELECT id FROM sightings
+                WHERE sha256 = ? AND source_id = ? AND original_path = ?
+                """,
+                (identity_sha256, source_id, str(original_path)),
+            ).fetchone()
+            assert sighting is not None
+            self.connection.execute(
+                """
+                INSERT OR IGNORE INTO batch_items(batch_id, sighting_id)
+                VALUES (?, ?)
+                """,
+                (batch_id, sighting["id"]),
+            )
+        record = self.file(identity_sha256)
         assert record is not None
         return record, created, cursor.rowcount == 1
 
@@ -456,7 +540,12 @@ class Catalog:
     def mark_batch_unique(self, batch_id: str, *, exclude: set[str]) -> None:
         """Advance unambiguous new files after dedupe analysis."""
         rows = self.connection.execute(
-            "SELECT DISTINCT sha256 FROM sightings WHERE batch_id = ?", (batch_id,)
+            """
+            SELECT DISTINCT sightings.sha256
+            FROM batch_items JOIN sightings ON sightings.id = batch_items.sighting_id
+            WHERE batch_items.batch_id = ?
+            """,
+            (batch_id,),
         ).fetchall()
         with self.transaction():
             for row in rows:
@@ -507,6 +596,13 @@ class Catalog:
 
     def count(self, table: str) -> int:
         """Return a row count for a known catalog table (tests/reporting only)."""
-        if table not in {"sources", "batches", "files", "sightings", "operations"}:
+        if table not in {
+            "sources",
+            "batches",
+            "files",
+            "sightings",
+            "batch_items",
+            "operations",
+        }:
             raise ValueError(f"Unsupported table: {table}")
         return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])

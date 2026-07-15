@@ -136,6 +136,10 @@ def execute(
                 continue
             paths = _detail_paths(detail)
             allowed_paths = _catalog_paths(catalog, str(row["sha256"]))
+            file_record = catalog.file(str(row["sha256"]))
+            expected_hashes = {str(row["sha256"])}
+            if file_record is not None and file_record["current_sha256"]:
+                expected_hashes.add(str(file_record["current_sha256"]))
             detail["status"] = "executing"
             detail["approved_at"] = utc_now()
             with catalog.transaction():
@@ -162,7 +166,7 @@ def execute(
                     trashed.append(path_text)
                     continue
                 try:
-                    if _sha256(path) != row["sha256"]:
+                    if _sha256(path) not in expected_hashes:
                         failures.append({"path": path_text, "error": "Content changed since review"})
                         continue
                     send2trash(str(path))
