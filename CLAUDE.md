@@ -56,11 +56,17 @@ Immich(external library)索引。GUI-first 工具型 app(open→process→close)
 - **GUI 阻斷修復**:`8212564 fix(gui): restore visible photo workflow`。掃描結果現在
   固定顯示真實縮圖；貼入來源路徑後顯示「已加入／等待掃描」；結果首屏明示
   下一步；縮圖每批 24 個，失敗有可理解 fallback。
-- **驗證證據**:`uv run pytest -q` 157 passed；`uv run ruff check .` 全過；
-  `cd frontend && npm run build` 全過；G3 個資閘門無輸出；fresh verifier 無阻斷。
-- **瀏覽器實測**:以臨時 fixture 三張 PNG 驗證，3/3 縮圖載入，naturalWidth
-  皆 1024；當次驗證使用本機 app server，不代表下個 session 仍在運行。
-- **Fable 5 下一步**:先用使用者指定的本機照片資料夾做 end-to-end UX 驗收，重點是
-  縮圖可見、來源狀態、首屏 CTA 與大量照片分批載入；不要再重做已完成的 P0/P1。
+- **真實資料 operator walkthrough(2026-07-18 已完成)**:以 config.yaml `base_dir`
+  指定的真實資料夾（1,117 媒體檔、36.6GB、999 部影片）跑唯讀掃描 walkthrough，
+  playwright 驅動 20 項檢核全過：真實縮圖（影片畫格、HEIC 轉檔皆載入）、來源狀態
+  （已加入／等待掃描／掃描中／完成／失敗）、每頁單一主 CTA、損壞檔 fallback、
+  24 檔分批載入；來源資料夾 stat 快照前後 diff 為空（零修改）。掃描器略過
+  隱藏目錄（.dtrash/.thumbnails/.previews 等衍生物）為預期行為。
+- **本次修正**:`f33829c fix(gui): localize scan failure message`（掃描失敗訊息
+  繁中化）。驗證：pytest 157 passed、ruff check 全過、frontend build 過、
+  G3 個資閘門無輸出、fresh verifier PASS 零缺陷。
+- **Fable 5 下一步**:掃描階段 UX 已驗收；「建立安全工作副本」(ingest) 之後的階段
+  尚未在真實資料上走過——staging 需約 36.6GB 磁碟，等使用者拍板 staging 位置
+  （pipeline-design.md §13 未決事項）後再執行。不要重做已完成的掃描驗收。
 - **工作樹注意**:reports 索引與 product guide 有既存未提交變更；另有 `.DS_Store`、
   `AGENTS.md`、`CLAUDE.md.bak` 等未追蹤檔。不可混入本次 handoff commit。
