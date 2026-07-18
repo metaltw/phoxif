@@ -40,7 +40,11 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
       .catch((err) => {
         console.error('Source scan failed:', err);
         setScanning(false);
-        setError(err instanceof Error ? err.message : '無法讀取來源，請確認資料夾仍然可用。');
+        const raw = err instanceof Error ? err.message : '';
+        const missing = raw.match(/^Path not found: (.+)$/);
+        setError(missing
+          ? `找不到資料夾：${missing[1]}。請確認路徑拼字，或外接硬碟是否已連接。`
+          : (raw || '無法讀取來源，請確認資料夾仍然可用。'));
       });
   }, [mode, onComplete, sources]);
 
