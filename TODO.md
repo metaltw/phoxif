@@ -30,6 +30,18 @@
 | P1-8 | README CLI 段落加 legacy 注記 + 指向 ADR-0007;`phoxif` console script 與 `python -m` 兩套入口的說明釐清 | README 與實際入口一致(逐條人工比對) | haiku / low |
 | P1-9 | design.md 硬規則措辭更新(ADR-0006 決策 2)——**先說再改:需 Metal 核准後執行** | design.md 與 ADR-0006 無矛盾;改動 diff 先貼給 Metal | sonnet / low |
 
+## RT — 2026-07-18 red-team 殘留(缺陷已知、尚未修,不得宣稱已解)
+
+來源:三路 red-team 攻擊(K1 輸入模糊、K2 全管線、K3 狀態),完整證據在該次
+session 報告。P0/多數 P1 已修(見檔尾已完成段);以下為誠實殘留。
+
+| # | 項目 | 驗收條件 | 派工 |
+|---|---|---|---|
+| RT-1 | 中斷後無 resume 路徑(K2#A6/K3#2):F5/當機後只能重掃描重走各階段。已修掉「靜默毀損」(A15)與「無警告」(beforeunload),但 resume 本體未做——需 catalog-backed「未完成批次」清單 + 進入點 UI(架構級,先過 Metal) | 重整後可從 catalog 列出未完成 batch 並續走;含測試 | sonnet / high,先提案 |
+| RT-2 | ingest 無數字進度(K2#A5):36.6GB 實測外推約 2 分鐘只有靜態文字(event loop 已修,期間縮圖仍可用)。需 per-file/bytes 進度(建議 SSE 或輪詢端點) | UI 顯示 n/N 檔或 bytes 進度;大批次實測 | sonnet / medium |
+| RT-3 | 掃描進度條為裝飾性(K3#10):隨機遞增、95% 封頂,慢碟長掃描會停在 95%。與 RT-2 同批做真進度 | 進度反映實際掃描狀態 | 併入 RT-2 |
+| RT-4 | 子目錄層級的權限缺損仍靜默(census 只驗 root 可讀;root 可讀但子目錄不可讀時,該子樹靜默缺席) | 掃描結果回報「無法讀取的子目錄清單」;測試 | sonnet / medium |
+
 ## P2 — 後續(時機到再做)
 
 | # | 項目 | 觸發時機 |

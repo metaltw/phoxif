@@ -62,11 +62,18 @@ Immich(external library)索引。GUI-first 工具型 app(open→process→close)
   （已加入／等待掃描／掃描中／完成／失敗）、每頁單一主 CTA、損壞檔 fallback、
   24 檔分批載入；來源資料夾 stat 快照前後 diff 為空（零修改）。掃描器略過
   隱藏目錄（.dtrash/.thumbnails/.previews 等衍生物）為預期行為。
-- **本次修正**:`f33829c fix(gui): localize scan failure message`（掃描失敗訊息
-  繁中化）。驗證：pytest 157 passed、ruff check 全過、frontend build 過、
-  G3 個資閘門無輸出、fresh verifier PASS 零缺陷。
-- **Fable 5 下一步**:掃描階段 UX 已驗收；「建立安全工作副本」(ingest) 之後的階段
-  尚未在真實資料上走過——staging 需約 36.6GB 磁碟，等使用者拍板 staging 位置
-  （pipeline-design.md §13 未決事項）後再執行。不要重做已完成的掃描驗收。
+- **2026-07-18 red-team(三路攻擊、隔離環境、含全管線真實小子集實跑)已完成並修復**:
+  P0×3 全修——re-ingest 會清掉 enrichment 過的工作副本並使 catalog 永久失聯
+  (ingest 改為同時信任 `files.current_sha256`)、無權限資料夾被當成空資料夾
+  (census 拒絕並報錯)、父子來源重疊自我判重(census 拒絕)。另修:全部 API
+  handler async→def + 寫入互斥鎖(長複製期間 UI 不再凍結,附併發實證與回歸測試)、
+  錯誤訊息繁中化(連線失敗/HTTP/archive marker)、輸入正規化(file://、引號、
+  跳脫空白)、雙擊防護、Back/F5 防護、整理紀錄繁中化、staging 隔離事件浮上 UI。
+  測試 157→163;fresh verifier PASS 零 MUST-FIX。
+- **誠實殘留(見 TODO.md RT 段,不得宣稱已解)**:中斷後無 resume 路徑、
+  ingest 無數字進度、掃描進度條裝飾性、子目錄層級權限缺損仍靜默。
+- **Fable 5 下一步**:掃描階段 UX 與 red-team 已收斂;全量 ingest(staging 約需
+  36.6GB)等使用者拍板 staging 位置(pipeline-design.md §13);RT-1 resume 路徑
+  屬架構級,動工前先提案。
 - **工作樹注意**:reports 索引與 product guide 有既存未提交變更；另有 `.DS_Store`、
   `AGENTS.md`、`CLAUDE.md.bak` 等未追蹤檔。不可混入本次 handoff commit。
