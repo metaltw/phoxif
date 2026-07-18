@@ -4,6 +4,45 @@ import { pickFolder, scanSources } from '../api';
 
 interface ScanScreenProps {
   onComplete: (result: ScanResult) => void;
+  initialSources?: string[];
+}
+
+// Clean up paste artifacts: file:// URIs, wrapping quotes, shell-escaped spaces.
+function normalizeFolderInput(raw: string): string {
+  let path = raw.trim();
+  if (path.startsWith('file://')) {
+    const rest = path.slice('file://'.length);
+    try {
+      path = decodeURIComponent(rest);
+    } catch {
+      path = rest;
+    }
+  }
+  if ((path.startsWith('"') && path.endsWith('"'))
+    || (path.startsWith("'") && path.endsWith("'"))) {
+    path = path.slice(1, -1);
+  }
+  return path.replace(/\\ /g, ' ').trim();
+}
+
+function describeScanError(raw: string): string {
+  const missing = raw.match(/^Path not found: (.+)$/);
+  if (missing) {
+    return `找不到資料夾：${missing[1]}。請確認路徑拼字，或外接硬碟是否已連接。`;
+  }
+  const file = raw.match(/^Not a folder: (.+)$/);
+  if (file) {
+    return `這是單一檔案：${file[1]}。請改貼「包含照片的資料夾」路徑。`;
+  }
+  const denied = raw.match(/^Permission denied: (.+)$/);
+  if (denied) {
+    return `沒有權限讀取：${denied[1]}。請調整資料夾權限，或在「系統設定 → 隱私權與安全性」允許存取後重試。`;
+  }
+  const overlap = raw.match(/^Sources overlap: (.+) is inside (.+)$/);
+  if (overlap) {
+    return `來源互相重疊：「${overlap[1]}」已包含在「${overlap[2]}」裡面。請移除其中一個，以免同一張照片被算成兩份。`;
+  }
+  return raw || '無法讀取來源，請確認資料夾仍然可用。';
 }
 
 const SCAN_MESSAGES = [
@@ -14,18 +53,20 @@ const SCAN_MESSAGES = [
   '正在準備整理摘要…',
 ];
 
-export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
+export function ScanScreen({ onComplete, initialSources }: ScanScreenProps): React.JSX.Element {
   const [scanning, setScanning] = useState(false);
   const [mode, setMode] = useState<IntakeMode>('rescue');
-  const [sources, setSources] = useState<string[]>([]);
+  const [sources, setSources] = useState<string[]>(initialSources ?? []);
   const [manualPath, setManualPath] = useState('');
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scanRequestedRef = useRef(false);
 
   const startScan = useCallback(() => {
-    if (sources.length === 0) return;
+    if (sources.length === 0 || scanRequestedRef.current) return;
+    scanRequestedRef.current = true;
     setError(null);
     setScanning(true);
     setProgress(0);
@@ -39,22 +80,35 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
       })
       .catch((err) => {
         console.error('Source scan failed:', err);
+        scanRequestedRef.current = false;
         setScanning(false);
-        const raw = err instanceof Error ? err.message : '';
-        const missing = raw.match(/^Path not found: (.+)$/);
-        setError(missing
-          ? `找不到資料夾：${missing[1]}。請確認路徑拼字，或外接硬碟是否已連接。`
-          : (raw || '無法讀取來源，請確認資料夾仍然可用。'));
+        setError(describeScanError(err instanceof Error ? err.message : ''));
       });
   }, [mode, onComplete, sources]);
 
   const addSource = useCallback((path: string) => {
-    const normalized = path.trim();
+    const normalized = normalizeFolderInput(path);
     if (!normalized) return;
+    if (sources.includes(normalized)) {
+      setError(`這個資料夾已經在清單中，不會重複加入：${normalized}`);
+      setManualPath('');
+      return;
+    }
     setSources((current) => current.includes(normalized) ? current : [...current, normalized]);
     setManualPath('');
     setError(null);
-  }, []);
+  }, [sources]);
+
+  // Warn before leaving while a scan is in flight — a reload silently discards it.
+  useEffect(() => {
+    if (!scanning) return;
+    const guard = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [scanning]);
 
   const handleBrowse = useCallback(async () => {
     const path = await pickFolder();

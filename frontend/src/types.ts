@@ -94,6 +94,7 @@ export interface IntakeBatchResult {
   archived_reunions: number;
   staged_files: number;
   verified_staging: number;
+  quarantined_staging: number;
   phash_failures: number;
   sidecars: number;
   staged_sidecars: number;

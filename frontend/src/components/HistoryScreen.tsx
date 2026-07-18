@@ -33,7 +33,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
         setLoading(false);
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to load history');
+        setError(err instanceof Error ? err.message : '整理紀錄載入失敗');
         setLoading(false);
       });
   }, []);
@@ -55,7 +55,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
         i === index ? { ...s, undone: true } : s
       ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Undo failed');
+      setError(err instanceof Error ? err.message : '復原失敗');
     } finally {
       setUndoingIndex(null);
     }
@@ -64,7 +64,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
   if (loading) {
     return (
       <div className="screen-center">
-        <div style={{ color: 'var(--dim)', fontSize: '14px' }}>Loading history...</div>
+        <div style={{ color: 'var(--dim)', fontSize: '14px' }}>正在載入整理紀錄…</div>
       </div>
     );
   }
@@ -73,11 +73,11 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
     <div className="screen">
       <div className="hist-wrap" style={{ margin: '0 auto' }}>
         <button className="d-back" onClick={onBack}>
-          {'\u2190'} Back
+          {'\u2190'} 返回
         </button>
-        <h2>Operation History</h2>
+        <h2>整理紀錄</h2>
         <div className="hist-sub">
-          Every session is logged. Click to expand details, or undo an entire session.
+          每次執行都會留下紀錄。點一列展開細節，也可以整批復原。
         </div>
 
         {error && (
@@ -92,7 +92,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
 
         {sessions.length === 0 && !error && (
           <div style={{ color: 'var(--dim)', fontSize: '14px', textAlign: 'center', marginTop: '32px' }}>
-            No operations yet. History will appear after your first scan & execute.
+            目前沒有任何操作紀錄。完成第一次掃描與執行後，這裡就會出現紀錄。
           </div>
         )}
 
@@ -106,12 +106,12 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
               <div className="hs-head" onClick={() => toggleExpand(i)}>
                 <span className="hs-date">{'\uD83D\uDCC5'} {session.timestamp}</span>
                 <span className="hs-summary">
-                  {session.operations.length} operation{session.operations.length !== 1 ? 's' : ''}
+                  {session.operations.length} 個操作
                 </span>
-                {session.undone && <span className="hs-undone-label">UNDONE</span>}
+                {session.undone && <span className="hs-undone-label">已復原</span>}
                 <div className="hs-spacer" />
                 {session.undone ? (
-                  <button className="hs-undo undone-btn">{'\u21A9'} Undone</button>
+                  <button className="hs-undo undone-btn">{'\u21A9'} 已復原</button>
                 ) : (
                   <button
                     className="hs-undo"
@@ -121,7 +121,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
                       void handleUndo(i);
                     }}
                   >
-                    {undoingIndex === i ? 'Undoing...' : '\u21A9 Undo'}
+                    {undoingIndex === i ? '正在復原…' : '\u21A9 復原'}
                   </button>
                 )}
               </div>
@@ -140,7 +140,7 @@ export function HistoryScreen({ onBack }: HistoryScreenProps): React.JSX.Element
                         className="hi-detail"
                         style={session.undone ? { color: 'var(--amber)' } : undefined}
                       >
-                        {session.undone ? (op.detail || 'reverted') : op.detail}
+                        {session.undone ? (op.detail || '已還原') : op.detail}
                       </span>
                     </div>
                   ))}

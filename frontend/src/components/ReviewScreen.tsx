@@ -243,7 +243,9 @@ export function ReviewScreen({
             <div>
               <small>你現在在哪裡：掃描已完成 → 下一步</small>
               <strong>{ingestError ? '尚未建立工作副本' : ingestTitle}</strong>
-              <p>{ingestError ?? ingestDescription}</p>
+              <p>{ingesting
+                ? '正在逐檔計算 SHA-256 並複製到工作區。資料量大時需要幾分鐘，期間畫面仍可捲動，請勿關閉視窗。'
+                : (ingestError ?? ingestDescription)}</p>
             </div>
             <button className="btn-execute" onClick={onIngest} disabled={ingesting || scanResult.total_files === 0}>
               {ingesting ? '正在驗證與複製…' : `${ingestTitle} →`}
@@ -687,6 +689,12 @@ export function ReviewScreen({
               </span>
               {ingestFailed && (
                 <small>{ingestSummary.failures.map((failure) => `${failure.label}: ${failure.error}`).join('；')}</small>
+              )}
+              {ingestSummary.totals.quarantined_staging > 0 && (
+                <small>
+                  ⚠ 有 {ingestSummary.totals.quarantined_staging} 個工作副本內容與紀錄不符，已隔離到
+                  staging 的 .corrupt 資料夾並重新複製；原始檔完全不受影響。
+                </small>
               )}
             </div>
             <button

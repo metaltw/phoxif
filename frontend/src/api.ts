@@ -8,17 +8,31 @@ interface ApiResponse<T> {
   error: string | null;
 }
 
+// Translate known backend error strings for the zh-TW operator flow.
+export function describePipelineError(raw: string, fallback: string): string {
+  if (raw.includes('archive_root marker missing')) {
+    return '收藏庫根目錄缺少 .phoxif-archive-root 識別檔。這是防止寫錯目的地的安全鎖：'
+      + '請先確認收藏庫磁碟已掛載到正確位置，再於該目錄放一個名為 .phoxif-archive-root 的空檔案，然後重試。';
+  }
+  return raw || fallback;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+  } catch {
+    throw new Error('無法連線到 phoxif。請確認應用程式仍在執行，再重試一次。');
+  }
   if (!res.ok) {
-    throw new Error(`HTTP error: ${res.status} ${res.statusText}`);
+    throw new Error(`phoxif 伺服器回應異常（HTTP ${res.status}）。請重試一次，或重新啟動 phoxif。`);
   }
   const body = await res.json() as ApiResponse<T>;
   if (!body.ok) {
-    throw new Error(body.error || 'Unknown API error');
+    throw new Error(body.error || '發生未知錯誤，請重試。');
   }
   return body.data;
 }

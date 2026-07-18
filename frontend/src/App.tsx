@@ -1,6 +1,6 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import type { ArchiveExecutionSummary, ArchivePlanSummary, Screen, ScanResult, ThumbState, OrientationIssue, IntakeIngestSummary, DateExecutionSummary, DatePlanSummary, GpsExecutionSummary, GpsPlanSummary, DedupePair, DedupeSummary, PendingTrashItem, TrashExecutionSummary } from './types';
-import { analyzeDuplicates, approvePendingTrash, executeArchive, executeDates, executeGps, fetchPendingTrash, ingestSources, planArchive, planDates, planGps, resolveDuplicate } from './api';
+import { analyzeDuplicates, approvePendingTrash, describePipelineError, executeArchive, executeDates, executeGps, fetchPendingTrash, ingestSources, planArchive, planDates, planGps, resolveDuplicate } from './api';
 import { StepBar } from './components/StepBar';
 import { ScanScreen } from './components/ScanScreen';
 import { ReviewScreen } from './components/ReviewScreen';
@@ -41,6 +41,7 @@ export function App(): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>('scan');
   const [prevScreen, setPrevScreen] = useState<Screen>('scan');
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [lastSources, setLastSources] = useState<string[]>([]);
   const [ingesting, setIngesting] = useState(false);
   const [ingestSummary, setIngestSummary] = useState<IntakeIngestSummary | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
@@ -91,6 +92,27 @@ export function App(): React.JSX.Element {
     setTimeout(() => setToast(null), 2000);
   }, []);
 
+  // With scan results on screen, browser Back would silently exit the app and
+  // a reload would silently drop the whole pipeline state — guard both.
+  useEffect(() => {
+    if (!scanResult) return;
+    window.history.pushState({ phoxif: true }, '');
+    const trapBack = () => {
+      window.history.pushState({ phoxif: true }, '');
+      showToast('掃描結果還在。要重新開始，請按「重新選擇」。');
+    };
+    const warnUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('popstate', trapBack);
+    window.addEventListener('beforeunload', warnUnload);
+    return () => {
+      window.removeEventListener('popstate', trapBack);
+      window.removeEventListener('beforeunload', warnUnload);
+    };
+  }, [scanResult, showToast]);
+
   const navigateTo = useCallback((s: Screen) => {
     setScreen(prev => {
       setPrevScreen(prev);
@@ -100,6 +122,7 @@ export function App(): React.JSX.Element {
 
   const handleScanComplete = useCallback((result: ScanResult) => {
     setScanResult(result);
+    setLastSources(result.source_paths);
     setIngestSummary(null);
     setIngestError(null);
     setDedupeSummary(null);
@@ -152,8 +175,12 @@ export function App(): React.JSX.Element {
     navigateTo('review');
   }, [navigateTo]);
 
+  // Ref guard: two native clicks can land before React re-renders `disabled`,
+  // and each ingest call records an audit batch row.
+  const ingestInFlightRef = useRef(false);
   const handleIngest = useCallback(async () => {
-    if (!scanResult) return;
+    if (!scanResult || ingestInFlightRef.current) return;
+    ingestInFlightRef.current = true;
     setIngesting(true);
     setIngestError(null);
     try {
@@ -162,6 +189,7 @@ export function App(): React.JSX.Element {
     } catch (error) {
       setIngestError(error instanceof Error ? error.message : '建立工作副本失敗');
     } finally {
+      ingestInFlightRef.current = false;
       setIngesting(false);
     }
   }, [scanResult]);
@@ -320,7 +348,8 @@ export function App(): React.JSX.Element {
     try {
       setArchivePlan(await planArchive(ingestSummary.batches.map(batch => batch.batch_id)));
     } catch (error) {
-      setArchiveError(error instanceof Error ? error.message : '歸檔預覽失敗');
+      setArchiveError(describePipelineError(
+        error instanceof Error ? error.message : '', '歸檔預覽失敗'));
     } finally {
       setArchiving(false);
     }
@@ -373,7 +402,8 @@ export function App(): React.JSX.Element {
         setArchiveError('部分檔案未歸檔或 catalog 快照失敗；成功與失敗項目已分開列出。');
       }
     } catch (error) {
-      setArchiveError(error instanceof Error ? error.message : '歸檔寫入失敗');
+      setArchiveError(describePipelineError(
+        error instanceof Error ? error.message : '', '歸檔寫入失敗'));
     } finally {
       setArchiving(false);
     }
@@ -579,7 +609,7 @@ export function App(): React.JSX.Element {
       </div>
 
       {screen === 'scan' && (
-        <ScanScreen onComplete={handleScanComplete} />
+        <ScanScreen onComplete={handleScanComplete} initialSources={lastSources} />
       )}
 
       {screen === 'review' && scanResult && (
