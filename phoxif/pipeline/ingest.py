@@ -42,6 +42,7 @@ class BatchResult:
     archived_reunions: int
     staged_files: int
     verified_staging: int
+    quarantined_staging: int
     phash_failures: int
     sidecars: int
     staged_sidecars: int
@@ -120,6 +121,21 @@ def _reject_catalog_inside_source(source_root: Path, catalog_db: Path) -> None:
 def _verified_copy(path: Path | None, sha256: str) -> bool:
     """Return whether a recorded working copy still exists and is intact."""
     return path is not None and not path.is_symlink() and path.is_file() and _sha256(path) == sha256
+
+
+def _verified_copy_any(path: Path | None, expected_hashes: set[str]) -> bool:
+    """Return whether a working copy matches any trusted content state.
+
+    A staging copy legitimately diverges from the original once enrichment
+    writes metadata into it; the catalog records that state as
+    ``files.current_sha256``. Only a copy matching neither hash is corrupt.
+    """
+    return (
+        path is not None
+        and not path.is_symlink()
+        and path.is_file()
+        and _sha256(path) in expected_hashes
+    )
 
 
 def _quarantine_corrupt_staging(path: Path, staging_root: Path) -> None:
@@ -238,6 +254,7 @@ def run(
             "archived_reunions": 0,
             "staged_files": 0,
             "verified_staging": 0,
+            "quarantined_staging": 0,
             "phash_failures": 0,
             "sidecars": 0,
             "staged_sidecars": 0,
@@ -262,6 +279,10 @@ def run(
 
                 staging_path: Path | None
                 if mode == "rescue" and not archived and not duplicate:
+                    expected_hashes = {sha256}
+                    if existing is not None and existing["current_sha256"]:
+                        # Enrichment legitimately rewrote this working copy.
+                        expected_hashes.add(str(existing["current_sha256"]))
                     exact_copy = catalog.sighting_staging_path(
                         sha256,
                         source_id,
@@ -276,7 +297,7 @@ def run(
                         (
                             candidate
                             for candidate in candidates
-                            if _verified_copy(candidate, sha256)
+                            if _verified_copy_any(candidate, expected_hashes)
                         ),
                         None,
                     )
@@ -285,21 +306,23 @@ def run(
                         for candidate in candidates:
                             if (
                                 candidate.exists() or candidate.is_symlink()
-                            ) and not _verified_copy(
+                            ) and not _verified_copy_any(
                                 candidate,
-                                sha256,
+                                expected_hashes,
                             ):
                                 _quarantine_corrupt_staging(candidate, resolved_staging)
+                                counters["quarantined_staging"] += 1
                         staging_path = (
                             resolved_staging / "objects" / sha256[:2] / f"{sha256}{extension}"
                         )
                         if (
                             staging_path.exists() or staging_path.is_symlink()
-                        ) and not _verified_copy(staging_path, sha256):
+                        ) and not _verified_copy_any(staging_path, expected_hashes):
                             _quarantine_corrupt_staging(staging_path, resolved_staging)
+                            counters["quarantined_staging"] += 1
                         if _stage_copy(source_path, staging_path, sha256):
                             counters["staged_files"] += 1
-                    if not _verified_copy(staging_path, sha256):
+                    if not _verified_copy_any(staging_path, expected_hashes):
                         raise RuntimeError(f"Working-copy verification failed for {source_path}")
                     counters["verified_staging"] += 1
                 elif mode == "inbox":

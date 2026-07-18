@@ -1,5 +1,6 @@
 """Read-only census for one or more photo sources."""
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,9 +48,17 @@ def scan_sources(
         root = raw_root.expanduser().resolve()
         if not root.is_dir():
             raise NotADirectoryError(root)
+        if not os.access(root, os.R_OK | os.X_OK):
+            # An unreadable root would otherwise census as an empty folder.
+            raise PermissionError(f"Permission denied: {root}")
         if root not in seen_roots:
             seen_roots.add(root)
             unique_roots.append(root)
+    for child in unique_roots:
+        for parent in unique_roots:
+            if child is not parent and child.is_relative_to(parent):
+                # Nested roots double-count files and fabricate self-duplicates.
+                raise ValueError(f"Sources overlap: {child} is inside {parent}")
 
     all_files: list[dict[str, Any]] = []
     source_summaries: list[dict[str, Any]] = []

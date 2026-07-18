@@ -1,11 +1,13 @@
 """API routes for phoxif backend."""
 
+import functools
 import hashlib
 import platform
 import re
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -46,6 +48,23 @@ from phoxif.pipeline.trash import execute as execute_pipeline_trash
 from phoxif.pipeline.trash import pending as pending_pipeline_trash
 
 router = APIRouter(prefix="/api")
+
+# Handlers are plain ``def`` so FastAPI runs them in the threadpool and the
+# event loop stays free to serve thumbnails during long copies. Mutating
+# handlers still run one at a time, as the single-threaded loop once forced.
+_pipeline_mutation_lock = threading.Lock()
+
+
+def _serialize_mutations(handler):  # noqa: ANN001, ANN202 - generic passthrough
+    """Serialize handlers that write to the catalog, staging, or user files."""
+
+    @functools.wraps(handler)
+    def locked(*args: Any, **kwargs: Any) -> Any:
+        with _pipeline_mutation_lock:
+            return handler(*args, **kwargs)
+
+    return locked
+
 
 # Thumbnail cache directory
 _thumb_cache_dir = Path(tempfile.gettempdir()) / "phoxif_thumbs"
@@ -331,7 +350,7 @@ def _cache_census(scan_data: dict[str, Any]) -> None:
 
 
 @router.post("/scan", response_model=ApiResponse)
-async def api_scan(req: ScanRequest) -> ApiResponse:
+def api_scan(req: ScanRequest) -> ApiResponse:
     """Scan a folder and return file metadata + duplicate groups.
 
     Args:
@@ -356,7 +375,7 @@ async def api_scan(req: ScanRequest) -> ApiResponse:
 
 
 @router.post("/intake/scan", response_model=ApiResponse)
-async def api_intake_scan(req: IntakeScanRequest) -> ApiResponse:
+def api_intake_scan(req: IntakeScanRequest) -> ApiResponse:
     """Inspect historical or messaging sources without modifying them."""
     if not req.paths:
         return ApiResponse(ok=False, error="Choose at least one photo source")
@@ -365,6 +384,8 @@ async def api_intake_scan(req: IntakeScanRequest) -> ApiResponse:
     for raw_path in req.paths:
         resolved = _resolve_folder_path(raw_path)
         if resolved is None:
+            if Path(raw_path).expanduser().is_file():
+                return ApiResponse(ok=False, error=f"Not a folder: {raw_path}")
             return ApiResponse(ok=False, error=f"Path not found: {raw_path}")
         if resolved not in resolved_paths:
             resolved_paths.append(resolved)
@@ -480,7 +501,8 @@ def _archive_settings() -> tuple[Path, Path]:
 
 
 @router.post("/intake/ingest", response_model=ApiResponse)
-async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     """Create verified working copies and permanent catalog evidence."""
     if not req.paths:
         return ApiResponse(ok=False, error="Choose at least one photo source")
@@ -489,6 +511,8 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
     for raw_path in req.paths:
         resolved = _resolve_folder_path(raw_path)
         if resolved is None:
+            if Path(raw_path).expanduser().is_file():
+                return ApiResponse(ok=False, error=f"Not a folder: {raw_path}")
             return ApiResponse(ok=False, error=f"Path not found: {raw_path}")
         if resolved not in resolved_paths:
             resolved_paths.append(resolved)
@@ -520,6 +544,7 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
             "archived_reunions",
             "staged_files",
             "verified_staging",
+            "quarantined_staging",
             "phash_failures",
             "sidecars",
             "staged_sidecars",
@@ -539,7 +564,8 @@ async def api_intake_ingest(req: IntakeIngestRequest) -> ApiResponse:
 
 
 @router.post("/intake/dedupe", response_model=ApiResponse)
-async def api_intake_dedupe(req: IntakeDedupeRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_dedupe(req: IntakeDedupeRequest) -> ApiResponse:
     """Analyze ingested batches without deleting any user file."""
     batch_ids = list(dict.fromkeys(req.batch_ids))
     if not batch_ids:
@@ -583,7 +609,8 @@ async def api_intake_dedupe(req: IntakeDedupeRequest) -> ApiResponse:
 
 
 @router.post("/intake/dedupe/resolve", response_model=ApiResponse)
-async def api_intake_dedupe_resolve(req: DedupeResolveRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_dedupe_resolve(req: DedupeResolveRequest) -> ApiResponse:
     """Resolve one review pair after recomputing its safety constraints."""
     catalog_db, _staging_root = _pipeline_storage_paths()
     auto_threshold, review_threshold = _dedupe_thresholds()
@@ -604,7 +631,7 @@ async def api_intake_dedupe_resolve(req: DedupeResolveRequest) -> ApiResponse:
 
 
 @router.post("/intake/trash/pending", response_model=ApiResponse)
-async def api_pipeline_trash_pending(req: PipelineTrashPendingRequest) -> ApiResponse:
+def api_pipeline_trash_pending(req: PipelineTrashPendingRequest) -> ApiResponse:
     """List duplicate files that still require explicit disposal approval."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -619,7 +646,8 @@ async def api_pipeline_trash_pending(req: PipelineTrashPendingRequest) -> ApiRes
 
 
 @router.post("/intake/trash/execute", response_model=ApiResponse)
-async def api_pipeline_trash_execute(req: PipelineTrashExecuteRequest) -> ApiResponse:
+@_serialize_mutations
+def api_pipeline_trash_execute(req: PipelineTrashExecuteRequest) -> ApiResponse:
     """Execute only explicitly approved, catalog-scoped trash operations."""
     catalog_db, _staging_root = _pipeline_storage_paths()
     try:
@@ -677,7 +705,7 @@ def _plan_date_batches(batch_ids: list[str]) -> tuple[list[Any], list[dict[str, 
 
 
 @router.post("/intake/enrich/dates/plan", response_model=ApiResponse)
-async def api_intake_date_plan(req: IntakeDateRequest) -> ApiResponse:
+def api_intake_date_plan(req: IntakeDateRequest) -> ApiResponse:
     """Return explainable date decisions without modifying media."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -696,7 +724,8 @@ async def api_intake_date_plan(req: IntakeDateRequest) -> ApiResponse:
 
 
 @router.post("/intake/enrich/dates/execute", response_model=ApiResponse)
-async def api_intake_date_execute(req: IntakeDateRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_date_execute(req: IntakeDateRequest) -> ApiResponse:
     """Execute freshly recomputed date plans on catalog-scoped working files."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -744,7 +773,7 @@ def _plan_gps_batches(batch_ids: list[str]) -> tuple[list[Any], list[dict[str, s
 
 
 @router.post("/intake/enrich/gps/plan", response_model=ApiResponse)
-async def api_intake_gps_plan(req: IntakeGpsRequest) -> ApiResponse:
+def api_intake_gps_plan(req: IntakeGpsRequest) -> ApiResponse:
     """Return conservative GPS decisions without modifying media."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -763,7 +792,8 @@ async def api_intake_gps_plan(req: IntakeGpsRequest) -> ApiResponse:
 
 
 @router.post("/intake/enrich/gps/execute", response_model=ApiResponse)
-async def api_intake_gps_execute(req: IntakeGpsRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_gps_execute(req: IntakeGpsRequest) -> ApiResponse:
     """Execute freshly recomputed, catalog-scoped GPS plans."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -787,7 +817,7 @@ async def api_intake_gps_execute(req: IntakeGpsRequest) -> ApiResponse:
 
 
 @router.post("/intake/archive/plan", response_model=ApiResponse)
-async def api_intake_archive_plan(req: IntakeArchiveRequest) -> ApiResponse:
+def api_intake_archive_plan(req: IntakeArchiveRequest) -> ApiResponse:
     """Return exact relative destinations without writing the archive root."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -807,7 +837,8 @@ async def api_intake_archive_plan(req: IntakeArchiveRequest) -> ApiResponse:
 
 
 @router.post("/intake/archive/execute", response_model=ApiResponse)
-async def api_intake_archive_execute(req: IntakeArchiveExecuteRequest) -> ApiResponse:
+@_serialize_mutations
+def api_intake_archive_execute(req: IntakeArchiveExecuteRequest) -> ApiResponse:
     """Recompute the plan server-side and execute only with explicit approval."""
     if not req.batch_ids:
         return ApiResponse(ok=False, error="Choose at least one ingest batch")
@@ -840,7 +871,7 @@ async def api_intake_archive_execute(req: IntakeArchiveExecuteRequest) -> ApiRes
 
 
 @router.get("/scan/status", response_model=ApiResponse)
-async def api_scan_status() -> ApiResponse:
+def api_scan_status() -> ApiResponse:
     """Return scan progress (placeholder for future WebSocket).
 
     Returns:
@@ -856,7 +887,8 @@ async def api_scan_status() -> ApiResponse:
 
 
 @router.post("/duplicates/trash", response_model=ApiResponse)
-async def api_trash_duplicates(req: TrashRequest) -> ApiResponse:
+@_serialize_mutations
+def api_trash_duplicates(req: TrashRequest) -> ApiResponse:
     """Trash selected duplicate files.
 
     Args:
@@ -900,7 +932,8 @@ async def api_trash_duplicates(req: TrashRequest) -> ApiResponse:
 
 
 @router.post("/rename/execute", response_model=ApiResponse)
-async def api_rename(req: RenameRequest) -> ApiResponse:
+@_serialize_mutations
+def api_rename(req: RenameRequest) -> ApiResponse:
     """Execute batch renames.
 
     Args:
@@ -937,7 +970,8 @@ async def api_rename(req: RenameRequest) -> ApiResponse:
 
 
 @router.post("/orientation/fix", response_model=ApiResponse)
-async def api_fix_orientation(req: OrientationFixRequest) -> ApiResponse:
+@_serialize_mutations
+def api_fix_orientation(req: OrientationFixRequest) -> ApiResponse:
     """Fix EXIF orientation for selected files (reset to Normal).
 
     Args:
@@ -974,7 +1008,7 @@ async def api_fix_orientation(req: OrientationFixRequest) -> ApiResponse:
 
 
 @router.get("/history", response_model=ApiResponse)
-async def api_history() -> ApiResponse:
+def api_history() -> ApiResponse:
     """Return all operation sessions from all loggers.
 
     Returns:
@@ -993,7 +1027,8 @@ async def api_history() -> ApiResponse:
 
 
 @router.post("/history/undo", response_model=ApiResponse)
-async def api_undo(req: UndoRequest) -> ApiResponse:
+@_serialize_mutations
+def api_undo(req: UndoRequest) -> ApiResponse:
     """Undo a session by index.
 
     Args:
@@ -1172,7 +1207,8 @@ def api_detect_orientation(req: OrientationDetectRequest) -> Response:
 
 
 @router.post("/orientation/auto-rotate", response_model=ApiResponse)
-async def api_auto_rotate(req: AutoRotateRequest) -> ApiResponse:
+@_serialize_mutations
+def api_auto_rotate(req: AutoRotateRequest) -> ApiResponse:
     """Auto-rotate images that are visually wrong.
 
     Sets EXIF Orientation tag then applies lossless auto-rotation
@@ -1211,7 +1247,8 @@ async def api_auto_rotate(req: AutoRotateRequest) -> ApiResponse:
 
 
 @router.post("/dates/fix", response_model=ApiResponse)
-async def api_fix_dates(req: DateFixRequest) -> ApiResponse:
+@_serialize_mutations
+def api_fix_dates(req: DateFixRequest) -> ApiResponse:
     """Fix file modification dates to match EXIF or filename dates.
 
     Args:
@@ -1247,7 +1284,8 @@ async def api_fix_dates(req: DateFixRequest) -> ApiResponse:
 
 
 @router.post("/non-photos/move", response_model=ApiResponse)
-async def api_move_non_photos(req: MoveNonPhotosRequest) -> ApiResponse:
+@_serialize_mutations
+def api_move_non_photos(req: MoveNonPhotosRequest) -> ApiResponse:
     """Move non-photo files to category subfolders.
 
     Moves files to `_non_photos/{category}/` under the base directory.
@@ -1296,7 +1334,7 @@ async def api_move_non_photos(req: MoveNonPhotosRequest) -> ApiResponse:
 
 
 @router.get("/reveal")
-async def api_reveal(
+def api_reveal(
     path: str = Query(..., description="File or folder path"),
 ) -> ApiResponse:
     """Reveal a file or folder in the system file manager.
@@ -1453,7 +1491,7 @@ def _verified_conversion_source(
 
 
 @router.get("/thumbnail")
-async def api_thumbnail(path: str = Query(..., description="File path")) -> Response:
+def api_thumbnail(path: str = Query(..., description="File path")) -> Response:
     """Serve a thumbnail for a file.
 
     For browser-viewable images (JPG/PNG), serves the file directly.
@@ -1649,7 +1687,7 @@ async def api_thumbnail(path: str = Query(..., description="File path")) -> Resp
 
 
 @router.get("/pick-folder", response_model=ApiResponse)
-async def api_pick_folder() -> ApiResponse:
+def api_pick_folder() -> ApiResponse:
     """Open a native folder picker dialog and return the selected path.
 
     Uses osascript on macOS, PowerShell on Windows, zenity/kdialog on Linux.

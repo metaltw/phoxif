@@ -47,7 +47,7 @@ def test_intake_ingest_aggregates_unique_sources(monkeypatch, tmp_path: Path) ->
         lambda: (tmp_path / "catalog.db", tmp_path / "staging"),
     )
 
-    response = asyncio.run(
+    response = (
         routes.api_intake_ingest(
             routes.IntakeIngestRequest(
                 paths=[str(first), str(first), str(second)],
@@ -68,6 +68,7 @@ def test_intake_ingest_aggregates_unique_sources(monkeypatch, tmp_path: Path) ->
         "archived_reunions": 0,
         "staged_files": 2,
         "verified_staging": 4,
+        "quarantined_staging": 0,
         "phash_failures": 0,
         "sidecars": 0,
         "staged_sidecars": 0,
@@ -76,7 +77,7 @@ def test_intake_ingest_aggregates_unique_sources(monkeypatch, tmp_path: Path) ->
 
 
 def test_intake_ingest_rejects_missing_source(tmp_path: Path) -> None:
-    response = asyncio.run(
+    response = (
         routes.api_intake_ingest(
             routes.IntakeIngestRequest(paths=[str(tmp_path / "missing")], mode="inbox")
         )
@@ -113,7 +114,7 @@ def test_intake_ingest_reports_partial_success(monkeypatch, tmp_path: Path) -> N
         )
 
     monkeypatch.setattr(routes, "run_ingest", fake_ingest)
-    response = asyncio.run(
+    response = (
         routes.api_intake_ingest(
             routes.IntakeIngestRequest(paths=[str(first), str(second)], mode="rescue")
         )
@@ -155,7 +156,7 @@ def test_intake_dedupe_reports_results_and_batch_failures(monkeypatch, tmp_path:
         )
 
     monkeypatch.setattr(routes, "run_dedupe", fake_dedupe)
-    response = asyncio.run(
+    response = (
         routes.api_intake_dedupe(
             routes.IntakeDedupeRequest(batch_ids=["good-batch", "good-batch", "failed-batch"])
         )
@@ -182,7 +183,7 @@ def test_dedupe_resolve_forwards_explicit_decision(monkeypatch, tmp_path: Path) 
         return {"decision": "keep-both", "pair_id": "pair-1"}
 
     monkeypatch.setattr(routes, "resolve_review", fake_resolve)
-    response = asyncio.run(
+    response = (
         routes.api_intake_dedupe_resolve(
             routes.DedupeResolveRequest(
                 batch_id="batch-1",
@@ -208,7 +209,7 @@ def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: 
     )
     fake_item = SimpleNamespace(to_dict=lambda: {"operation_id": 7, "paths": ["photo.jpg"]})
     monkeypatch.setattr(routes, "pending_pipeline_trash", lambda *_args, **_kwargs: [fake_item])
-    pending_response = asyncio.run(
+    pending_response = (
         routes.api_pipeline_trash_pending(routes.PipelineTrashPendingRequest(batch_ids=["batch-1"]))
     )
     assert pending_response.ok is True
@@ -223,13 +224,13 @@ def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: 
             else (_ for _ in ()).throw(PermissionError("approval required"))
         ),
     )
-    denied = asyncio.run(
+    denied = (
         routes.api_pipeline_trash_execute(
             routes.PipelineTrashExecuteRequest(operation_ids=[7], approved=False)
         )
     )
     assert denied.ok is False
-    approved = asyncio.run(
+    approved = (
         routes.api_pipeline_trash_execute(
             routes.PipelineTrashExecuteRequest(operation_ids=[7], approved=True)
         )
@@ -237,7 +238,7 @@ def test_pipeline_trash_routes_require_explicit_approval(monkeypatch, tmp_path: 
     assert approved.ok is True
     assert approved.data["completed"] == 1
 
-    empty_pending = asyncio.run(
+    empty_pending = (
         routes.api_pipeline_trash_pending(routes.PipelineTrashPendingRequest(batch_ids=[]))
     )
     assert empty_pending.ok is False
@@ -272,10 +273,10 @@ def test_date_plan_and_execute_routes_use_fresh_server_side_plan(
 
     monkeypatch.setattr(routes, "execute_dates", fake_execute)
 
-    plan_response = asyncio.run(
+    plan_response = (
         routes.api_intake_date_plan(routes.IntakeDateRequest(batch_ids=["batch-1"]))
     )
-    execute_response = asyncio.run(
+    execute_response = (
         routes.api_intake_date_execute(routes.IntakeDateRequest(batch_ids=["batch-1"]))
     )
 
@@ -315,10 +316,10 @@ def test_gps_plan_and_execute_routes_use_fresh_server_side_plan(
 
     monkeypatch.setattr(routes, "execute_gps", fake_execute)
 
-    plan_response = asyncio.run(
+    plan_response = (
         routes.api_intake_gps_plan(routes.IntakeGpsRequest(batch_ids=["batch-1"]))
     )
-    execute_response = asyncio.run(
+    execute_response = (
         routes.api_intake_gps_execute(routes.IntakeGpsRequest(batch_ids=["batch-1"]))
     )
 
@@ -398,17 +399,17 @@ def test_archive_routes_recompute_plan_and_require_explicit_approval(
         lambda plan, root, fingerprint: fingerprint == "reviewed-plan",
     )
 
-    preview = asyncio.run(
+    preview = (
         routes.api_intake_archive_plan(routes.IntakeArchiveRequest(batch_ids=["batch-1"]))
     )
-    denied = asyncio.run(
+    denied = (
         routes.api_intake_archive_execute(
             routes.IntakeArchiveExecuteRequest(
                 batch_ids=["batch-1"], plan_fingerprint="reviewed-plan", approved=False
             )
         )
     )
-    executed = asyncio.run(
+    executed = (
         routes.api_intake_archive_execute(
             routes.IntakeArchiveExecuteRequest(
                 batch_ids=["batch-1"],
@@ -417,7 +418,7 @@ def test_archive_routes_recompute_plan_and_require_explicit_approval(
             )
         )
     )
-    changed = asyncio.run(
+    changed = (
         routes.api_intake_archive_execute(
             routes.IntakeArchiveExecuteRequest(
                 batch_ids=["batch-1"], plan_fingerprint="stale-plan", approved=True
@@ -476,8 +477,8 @@ def test_thumbnail_allows_catalog_working_copy_but_not_arbitrary_file(
     )
     routes._scan_cache.clear()
 
-    allowed = asyncio.run(routes.api_thumbnail(str(working_copy)))
-    denied = asyncio.run(routes.api_thumbnail(str(arbitrary)))
+    allowed = (routes.api_thumbnail(str(working_copy)))
+    denied = (routes.api_thumbnail(str(arbitrary)))
 
     assert allowed.status_code == 200
     assert denied.status_code == 403
@@ -525,7 +526,7 @@ def test_thumbnail_accepts_a_cataloged_path_before_symlink_resolution(
     )
     routes._scan_cache.clear()
 
-    response = asyncio.run(routes.api_thumbnail(str(catalog_path)))
+    response = (routes.api_thumbnail(str(catalog_path)))
 
     assert response.status_code == 200
 
@@ -578,7 +579,7 @@ def test_thumbnail_rejects_a_cataloged_symlink_repointed_after_ingest(
     )
     routes._scan_cache.clear()
 
-    response = asyncio.run(routes.api_thumbnail(str(catalog_path)))
+    response = (routes.api_thumbnail(str(catalog_path)))
 
     assert response.status_code == 403
 
@@ -622,7 +623,7 @@ def test_thumbnail_streams_the_verified_inode_if_path_is_replaced(
     routes._scan_cache.clear()
 
     async def request_then_replace() -> tuple[int, bytes]:
-        response = await routes.api_thumbnail(str(working_copy))
+        response = routes.api_thumbnail(str(working_copy))
         working_copy.replace(tmp_path / "verified-original.jpg")
         working_copy.write_bytes(b"private-replacement")
         chunks = [chunk async for chunk in response.body_iterator]
@@ -647,7 +648,7 @@ def test_thumbnail_denies_unscanned_path_when_catalog_is_missing(
     )
     routes._scan_cache.clear()
 
-    response = asyncio.run(routes.api_thumbnail(str(arbitrary)))
+    response = (routes.api_thumbnail(str(arbitrary)))
 
     assert response.status_code == 403
 
@@ -705,7 +706,7 @@ def test_thumbnail_converter_failure_never_publishes_partial_cache(
 
     monkeypatch.setattr(routes.subprocess, "run", fail_after_partial_output)
 
-    responses = [asyncio.run(routes.api_thumbnail(str(media_path))) for media_path in files]
+    responses = [(routes.api_thumbnail(str(media_path))) for media_path in files]
 
     assert [response.status_code for response in responses] == [500, 500]
     assert list(cache_dir.iterdir()) == []
@@ -734,7 +735,7 @@ def test_thumbnail_cache_cleanup_error_closes_verified_handle(
 
     monkeypatch.setattr(Path, "unlink", fail_unlink)
 
-    response = asyncio.run(routes.api_thumbnail(str(media_path)))
+    response = (routes.api_thumbnail(str(media_path)))
 
     assert response.status_code == 500
     assert verified_handle.closed is True
@@ -748,7 +749,34 @@ def test_legacy_trash_rejects_path_outside_current_scan(tmp_path: Path) -> None:
     routes._scan_cache.clear()
     routes._scan_cache[str(scanned)] = {"files": [], "exiftool_available": False}
 
-    response = asyncio.run(routes.api_trash_duplicates(routes.TrashRequest(files=[str(outside)])))
+    response = (routes.api_trash_duplicates(routes.TrashRequest(files=[str(outside)])))
 
     assert response.ok is False
     assert response.error == "Every trash path must belong to the current scan"
+
+
+def test_intake_scan_rejects_file_path(make_jpeg, tmp_path: Path) -> None:
+    photo = make_jpeg("IMG_0004.jpg", directory=tmp_path / "src")
+
+    response = (
+        routes.api_intake_scan(
+            routes.IntakeScanRequest(paths=[str(photo)], mode="rescue")
+        )
+    )
+
+    assert response.ok is False
+    assert response.error is not None
+    assert response.error.startswith("Not a folder:")
+
+
+def test_api_handlers_stay_sync_for_threadpool() -> None:
+    """async-def handlers would block the event loop during long copies."""
+    import inspect
+
+    handlers = [
+        obj
+        for name, obj in vars(routes).items()
+        if name.startswith("api_") and callable(obj)
+    ]
+    assert handlers
+    assert not any(inspect.iscoroutinefunction(h) for h in handlers)

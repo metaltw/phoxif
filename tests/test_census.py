@@ -3,6 +3,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from phoxif.pipeline.census import scan_sources
 
 
@@ -45,3 +47,23 @@ def test_census_does_not_modify_source_files(make_jpeg, tmp_path: Path):
     scan_sources([source], mode="rescue")
 
     assert (photo.read_bytes(), photo.stat().st_mtime_ns) == before
+
+
+def test_scan_sources_rejects_unreadable_root(make_jpeg, tmp_path: Path):
+    locked = tmp_path / "locked"
+    make_jpeg("IMG_0002.jpg", directory=locked)
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError, match="Permission denied"):
+            scan_sources([locked], mode="rescue")
+    finally:
+        locked.chmod(0o755)
+
+
+def test_scan_sources_rejects_nested_sources(make_jpeg, tmp_path: Path):
+    parent = tmp_path / "library"
+    child = parent / "trip"
+    make_jpeg("IMG_0003.jpg", directory=child)
+
+    with pytest.raises(ValueError, match="Sources overlap"):
+        scan_sources([parent, child], mode="rescue")

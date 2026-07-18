@@ -560,3 +560,50 @@ def test_live_photo_links_when_image_and_video_arrive_in_different_batches(
     assert video_row["live_content_id"] == "cross-source-live-group"
     assert image_row["live_partner_sha256"] == _digest(video)
     assert video_row["live_partner_sha256"] == _digest(image)
+
+
+def test_reingest_preserves_enriched_working_copy(make_jpeg, tmp_path: Path):
+    """Re-ingest must trust catalog-recorded enrichment, not wipe it (A15)."""
+    source_root = tmp_path / "camera"
+    photo = make_jpeg("IMG_0005.jpg", directory=source_root)
+    database = tmp_path / "state" / "catalog.db"
+    staging = tmp_path / "staging"
+    run("camera", source_root, "rescue", catalog_db=database, staging_root=staging)
+
+    staged = next(staging.rglob("*.jpg"))
+    original_sha = _digest(photo)
+    enriched_bytes = staged.read_bytes() + b"phoxif-enrichment-marker"
+    staged.write_bytes(enriched_bytes)
+    with Catalog(database) as catalog:
+        catalog.update_current_content(
+            original_sha, hashlib.sha256(enriched_bytes).hexdigest(), len(enriched_bytes)
+        )
+
+    result = run("camera", source_root, "rescue", catalog_db=database, staging_root=staging)
+
+    assert staged.read_bytes() == enriched_bytes
+    assert not (staging / ".corrupt").exists()
+    assert result.staged_files == 0
+    assert result.verified_staging == 1
+    assert result.quarantined_staging == 0
+
+
+def test_reingest_quarantines_true_corruption_and_reports_it(make_jpeg, tmp_path: Path):
+    """Unrecorded byte changes are corruption: quarantine, restage, and count."""
+    source_root = tmp_path / "camera"
+    make_jpeg("IMG_0006.jpg", directory=source_root)
+    database = tmp_path / "state" / "catalog.db"
+    staging = tmp_path / "staging"
+    run("camera", source_root, "rescue", catalog_db=database, staging_root=staging)
+
+    staged = next(staging.rglob("*.jpg"))
+    pristine = staged.read_bytes()
+    staged.write_bytes(b"bitrot-or-tampering")
+
+    result = run("camera", source_root, "rescue", catalog_db=database, staging_root=staging)
+
+    assert staged.read_bytes() == pristine
+    corpses = list((staging / ".corrupt").glob("*.corrupt"))
+    assert len(corpses) == 1
+    assert result.staged_files == 1
+    assert result.quarantined_staging == 1
