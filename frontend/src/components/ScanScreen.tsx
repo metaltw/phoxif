@@ -110,6 +110,7 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
             className={`mode-card${mode === 'rescue' ? ' selected' : ''}`}
             onClick={() => setMode('rescue')}
           >
+            <span className="mode-choice">{mode === 'rescue' ? '✓ 目前選擇' : '選擇此模式'}</span>
             <span className="mode-icon">◫</span>
             <strong>整理多年舊照片</strong>
             <span>一次加入多台電腦、硬碟與手機備份，跨來源找出重複。</span>
@@ -121,6 +122,7 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
             className={`mode-card${mode === 'inbox' ? ' selected' : ''}`}
             onClick={() => setMode('inbox')}
           >
+            <span className="mode-choice">{mode === 'inbox' ? '✓ 目前選擇' : '選擇此模式'}</span>
             <span className="mode-icon">⇩</span>
             <strong>整理 LINE／WeChat 新照片</strong>
             <span>辨認聊天軟體壓縮版，盡量配回原圖與正確日期。</span>
@@ -145,22 +147,32 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
               <small>現在只會讀取，不會移動、改名或刪除任何檔案</small>
             </button>
           ) : (
-            <div className="source-list">
-              {sources.map((source, index) => (
-                <div className="source-row" key={source}>
-                  <span className="source-number">{index + 1}</span>
-                  <span className="source-path">{source}</span>
-                  <button
-                    type="button"
-                    className="source-remove"
-                    aria-label={`移除 ${source}`}
-                    onClick={() => setSources(current => current.filter(item => item !== source))}
-                  >
-                    移除
-                  </button>
+            <>
+              <div className="source-state" role="status">
+                <span>✓</span>
+                <div>
+                  <strong>已加入 {sources.length} 個照片資料夾</strong>
+                  <small>尚未掃描。確認下方路徑後，按藍色「開始掃描」。</small>
                 </div>
-              ))}
-            </div>
+              </div>
+              <div className="source-list">
+                {sources.map((source, index) => (
+                  <div className="source-row" key={source}>
+                    <span className="source-number">{index + 1}</span>
+                    <span className="source-path">{source}</span>
+                    <span className="source-pending">等待掃描</span>
+                    <button
+                      type="button"
+                      className="source-remove"
+                      aria-label={`移除 ${source}`}
+                      onClick={() => setSources(current => current.filter(item => item !== source))}
+                    >
+                      移除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           <div className="manual-source">
@@ -187,7 +199,7 @@ export function ScanScreen({ onComplete }: ScanScreenProps): React.JSX.Element {
             <div><strong>第一步完全唯讀</strong><small>掃描完成後，所有動作都會先列給你確認。</small></div>
           </div>
           <button type="button" className="btn-start-census" onClick={startScan} disabled={sources.length === 0}>
-            看看這批照片怎麼整理 →
+            {sources.length === 0 ? '請先加入照片資料夾' : `開始掃描 ${sources.length} 個資料夾 →`}
           </button>
         </div>
       </div>

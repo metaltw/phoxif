@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { ArchiveExecutionSummary, ArchivePlanSummary, DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, GpsExecutionSummary, GpsPlanSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
+import type { ArchiveExecutionSummary, ArchivePlanSummary, DateExecutionSummary, DatePlanSummary, DedupePair, DedupeSummary, FileInfo, GpsExecutionSummary, GpsPlanSummary, IntakeIngestSummary, PendingTrashItem, ScanResult, TrashExecutionSummary } from '../types';
 
 interface ReviewScreenProps {
   scanResult: ScanResult;
@@ -37,6 +37,36 @@ interface ReviewScreenProps {
   onArchiveExecute: () => void;
   onReset: () => void;
   formatSize: (bytes: number) => string;
+}
+
+interface PhotoProofCardProps {
+  file: FileInfo;
+  formatSize: (bytes: number) => string;
+}
+
+function PhotoProofCard({ file, formatSize }: PhotoProofCardProps): React.JSX.Element {
+  const [failed, setFailed] = useState(false);
+  return (
+    <figure className="photo-proof-card" title={file.path}>
+      <div className={`photo-proof-image${failed ? ' failed' : ''}`}>
+        {!failed && (
+          <img
+            src={`/api/thumbnail?path=${encodeURIComponent(file.path)}`}
+            alt={file.name}
+            loading="lazy"
+            onError={() => setFailed(true)}
+          />
+        )}
+        <span>{failed ? '無法預覽' : file.extension.replace('.', '').toUpperCase()}</span>
+      </div>
+      <figcaption>
+        <strong>{file.name}</strong>
+        <small>{failed
+          ? '檔案仍完整保留，縮圖轉換失敗'
+          : `${file.width && file.height ? `${file.width} × ${file.height} · ` : ''}${formatSize(file.size)}`}</small>
+      </figcaption>
+    </figure>
+  );
 }
 
 export function ReviewScreen({
@@ -77,6 +107,7 @@ export function ReviewScreen({
   formatSize,
 }: ReviewScreenProps): React.JSX.Element {
   const [archiveConfirmed, setArchiveConfirmed] = useState(false);
+  const [visiblePhotoCount, setVisiblePhotoCount] = useState(24);
   useEffect(() => {
     setArchiveConfirmed(false);
   }, [archivePlan?.plan_fingerprint]);
@@ -177,6 +208,8 @@ export function ReviewScreen({
   const ingestDescription = scanResult.mode === 'rescue'
     ? '每個檔案以 SHA-256 建立身分，複製後再次驗證；舊硬碟與原資料夾完全不動。'
     : '檔案留在收件資料夾，先建立永久紀錄；真正歸檔前仍會再讓你確認。';
+  const visiblePhotos: FileInfo[] = scanResult.files.slice(0, visiblePhotoCount);
+  const remainingPhotoCount = Math.max(0, scanResult.files.length - visiblePhotos.length);
 
   return (
     <div className="screen">
@@ -203,6 +236,20 @@ export function ReviewScreen({
           </div>
           <button className="btn-secondary" onClick={onReset} disabled={ingesting}>重新選擇</button>
         </header>
+
+        {!ingestSummary && (
+          <section className={`workflow-next${ingestError ? ' error' : ''}`} aria-label="下一步">
+            <span className="workflow-next-number">2</span>
+            <div>
+              <small>你現在在哪裡：掃描已完成 → 下一步</small>
+              <strong>{ingestError ? '尚未建立工作副本' : ingestTitle}</strong>
+              <p>{ingestError ?? ingestDescription}</p>
+            </div>
+            <button className="btn-execute" onClick={onIngest} disabled={ingesting || scanResult.total_files === 0}>
+              {ingesting ? '正在驗證與複製…' : `${ingestTitle} →`}
+            </button>
+          </section>
+        )}
 
         <section className="result-metrics" aria-label="掃描摘要">
           <div className="result-metric primary">
@@ -249,6 +296,32 @@ export function ReviewScreen({
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="photo-proof" aria-labelledby="photo-proof-title">
+          <div className="section-title-row">
+            <div>
+              <h2 id="photo-proof-title">這就是 phoxif 實際讀到的照片</h2>
+              <p>目前僅顯示縮圖；原始檔仍在原資料夾，未移動、未改名、未寫入 metadata。</p>
+            </div>
+            <span className="read-only-badge">已讀到 {scanResult.files.length.toLocaleString()} 個媒體檔</span>
+          </div>
+          {scanResult.files.length > 0 ? (
+            <>
+              <div className="photo-proof-grid">
+                {visiblePhotos.map(file => (
+                  <PhotoProofCard file={file} formatSize={formatSize} key={file.path} />
+                ))}
+              </div>
+              {remainingPhotoCount > 0 && (
+                <button className="btn-gallery-toggle" type="button" onClick={() => setVisiblePhotoCount(count => count + 24)}>
+                  再載入 {Math.min(24, remainingPhotoCount)} 個媒體檔（還有 {remainingPhotoCount.toLocaleString()} 個）
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="photo-proof-empty" role="status">這些路徑可讀取，但沒有找到可支援的照片或影片。</div>
+          )}
         </section>
 
         <section className="decision-section" aria-labelledby="decision-title">
@@ -587,7 +660,7 @@ export function ReviewScreen({
           </section>
         )}
 
-        {ingestSummary ? (
+        {ingestSummary && (
           <div className={`intake-commit-bar${ingestFailed ? ' error' : ' success'}`} role="status">
             <span className="commit-icon">{ingestFailed ? '!' : '✓'}</span>
             <div>
@@ -689,17 +762,6 @@ export function ReviewScreen({
             {dateError && <small>{dateError}</small>}
             {gpsError && <small>{gpsError}</small>}
             {archiveError && <small>{archiveError}</small>}
-          </div>
-        ) : (
-          <div className={`intake-commit-bar${ingestError ? ' error' : ''}`}>
-            <span className="commit-icon">{ingestError ? '!' : '→'}</span>
-            <div>
-              <strong>{ingestError ? '尚未建立工作副本' : ingestTitle}</strong>
-              <span>{ingestError ?? ingestDescription}</span>
-            </div>
-            <button className="btn-execute" onClick={onIngest} disabled={ingesting || scanResult.total_files === 0}>
-              {ingesting ? '正在驗證與複製…' : `${ingestTitle} →`}
-            </button>
           </div>
         )}
       </main>

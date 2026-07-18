@@ -74,6 +74,7 @@ export interface ScanResult {
   ready_to_collect: number;
   missing_dates: number;
   messaging_files: number;
+  files: FileInfo[];
   duplicates: DuplicateGroup[];
   similar_groups: SimilarGroup[];
   orientation_issues: OrientationIssue[];

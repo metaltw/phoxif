@@ -176,6 +176,7 @@ export async function scanSources(paths: string[], mode: IntakeMode): Promise<Sc
     ready_to_collect: data.stats.ready_to_collect ?? data.stats.total_files,
     missing_dates: data.stats.missing_dates ?? 0,
     messaging_files: data.stats.messaging_files ?? 0,
+    files: data.files.map(mapFile),
     duplicates,
     similar_groups,
     orientation_issues: [],
